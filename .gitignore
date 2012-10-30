@@ -1,4 +1,4 @@
-applications/*.php
 conf/phpd.conf
 doc/output
 /.project
+/nbproject
