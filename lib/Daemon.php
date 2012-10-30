@@ -15,6 +15,12 @@ class Daemon {
 	const SUPPORT_RUNKIT_IMPORT 		 = 3;
 
 	/**
+	 * Debug flag. Enables extra output
+	 * @var bool
+	 */
+	public static $debug = true;
+	
+	/**
 	 * PHPDaemon version
 	 * @var string
 	 */
