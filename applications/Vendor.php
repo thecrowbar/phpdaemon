@@ -145,7 +145,7 @@ class Vendor extends AppInstance{
 					
 					// $msg is a string of bytes from TCP socket convert it into an object
 					try {
-						$iso_msg = new ISO8583();
+						$iso_msg = new ISO8583Trans();
 						$iso_msg->addTCPMessage($msg);
 						$msg = $iso_msg;
 					} catch(Exception $e){
@@ -202,6 +202,9 @@ class Vendor extends AppInstance{
 								
 								// output some basic debugging data to view
 								Daemon::log($msg->getBasicDebugData());
+								if (method_exists($msg, 'getBit63DebugData')){
+									Daemon::log($msg->getBit63DebugData());
+								}
 							});
 							
 						});
