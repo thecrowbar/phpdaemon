@@ -207,7 +207,12 @@ class Vendor extends AppInstance{
 								
 								// updat the client over websocket that we received a response
 								if (is_object($app->ws)) {
-									$app->ws->client->sendFrame('Response received from vendor!', 'STRING');
+									$resp = new VendorClientMessage();
+									$resp->response = "This is response text";
+									$resp->trans_id = $msg->original_trans_id;
+									$resp->auth_iden_resp = $msg->getDataForBit(38);
+									$resp->response_code = $msg->getDataForBit(39);
+									$app->ws->client->sendFrame(json_encode($resp), 'STRING');
 								} else {
 									if (Daemon::$debug){
 										Daemon::log(Debug::dump($app));
@@ -224,6 +229,15 @@ class Vendor extends AppInstance{
 							});
 							
 						});
+						// check if our SQL connection failed
+						if (Daemon::$debug) {
+							if ($sql->connected){
+								Daemon::log('$sql->connected == true');
+							}else {
+								Daemon::log('$sql->connected !== true');
+							}
+							//Daemon::log(print_r($sql, true));
+						}
 					}
 					
 				});

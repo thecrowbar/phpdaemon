@@ -7,7 +7,20 @@ function create() {
 		document.getElementById('log').innerHTML += 'WebSocket opened <br/>';
 		ws_connected = true;
 	}
- 	ws.onmessage = function(e) {document.getElementById('log').innerHTML += 'WebSocket message: '+e.data+' <br/>';}
+ 	ws.onmessage = function(e) {
+		//debugger;
+		var resp = $.parseJSON(e.data);
+		if (resp.hasOwnProperty('trans_id')) {
+			// find the id record on screen
+			var scr_rec = $('tbody').find('[trans_id='+resp.trans_id+']');
+			// update the response text
+			$(scr_rec).find('[col_name=auth_iden_response]').html(resp.auth_iden_resp);
+			// update the response_code
+			$(scr_rec).find('[col_name=response_code]').html(resp.response_code);
+			//debugger;
+		}
+		document.getElementById('log').innerHTML += 'WebSocket message: '+e.data+' <br/>';
+	}
 	ws.onclose = function() {
 		document.getElementById('log').innerHTML += 'WebSocket closed <br/>';
 		ws_connected = false;

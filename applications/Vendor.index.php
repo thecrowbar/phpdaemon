@@ -61,7 +61,7 @@
 				}
 				echo "<tr class='pending_trans {$add_class}' trans_id='{$trans[$i]['id']}'>";
 				foreach($columns as $col) {
-					echo "\t\t\t\t\t\t<td>{$trans[$i][$col]}</td>\n";
+					echo "\t\t\t\t\t\t<td col_name='{$col}'>{$trans[$i][$col]}</td>\n";
 				}
 				echo "
 					</tr>\n";
