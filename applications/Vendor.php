@@ -55,6 +55,12 @@ class Vendor extends AppInstance{
 	public $tq;
 	
 	/**
+	 * The closure that handles communication over the web socket
+	 * @var VendorWebSocketRoute Object
+	 */
+	public $ws_closure;
+	
+	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
 	 * Uncomment and return array with your default options
@@ -199,6 +205,16 @@ class Vendor extends AppInstance{
 								// at this point we have a complete transaction response
 								// we need to update the original transaction in the database
 								
+								// updat the client over websocket that we received a response
+								if (is_object($app->ws)) {
+									$app->ws->client->sendFrame('Response received from vendor!', 'STRING');
+								} else {
+									if (Daemon::$debug){
+										Daemon::log(Debug::dump($app));
+									}
+									Daemon::log('$app->ws is not an object! Unable to send response over websocket!');
+								}
+								
 								
 								// output some basic debugging data to view
 								Daemon::log($msg->getBasicDebugData());
@@ -248,16 +264,20 @@ class Vendor extends AppInstance{
 	
 	/**
 	 * createTransaction() - create and send a transaction over TCP
-	 * @param int $trans_id - the database id of the transaction to create
-	 * @param ComplexJob $job
+	 * @param int $msg_id - the database id of the transaction to create
+	 * @param VendorWebSocketRoute $ws_closure - the closure that handles websocket communication
 	 * @return Null
 	 */
-	public function createMessage($msg_id) {
+	public function createMessage($msg_id, $ws_closure) {
 		$app = $this;
 		if (Daemon::$debug) {
 			Daemon::log(__METHOD__.' called with argument:'.$msg_id);
 			//Daemon::log(__METHOD__.' callback is:'.print_r($cb, true));
 		}
+		
+		// save our closure in appInstance so we can send data back to client 
+		// over web socket
+		$this->ws = $ws_closure;
 		
 		// create a job to store our MySQL results
 		$job = $this->job = new ComplexJob();

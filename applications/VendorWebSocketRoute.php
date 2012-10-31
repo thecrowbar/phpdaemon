@@ -5,6 +5,12 @@ class VendorWebSocketRoute extends WebSocketRoute {
 	 * @var Vendor Object
 	 */
 	public $appInstance;
+	/**
+	 * A link back to this closure so I can send data back to web browser through
+	 * websocket
+	 * @var VendorWebSocketRoute Object
+	 */
+	public $ws;
 
 	/**
 	 * Called when new frame received.
@@ -26,7 +32,9 @@ class VendorWebSocketRoute extends WebSocketRoute {
 			}
 			// act on our object
 			if ($client_data->command === 'send_trans') {
-				$this->appInstance->createMessage($client_data->trans_id);
+				$this->ws = $this;
+				$ws = $this->ws;
+				$this->appInstance->createMessage($client_data->trans_id, $ws);
 			} else {
 				// unknown command
 				$this->client->sendFrame('Unknown command:'.$client_data->command, 'STRING');
