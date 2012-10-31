@@ -32,7 +32,7 @@
 <link rel="stylesheet" href="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.0/themes/base/jquery-ui.css" type="text/css" media="all" /> 
 <script src="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.0/jquery-ui.min.js"></script>
 <script src="/js/jquery.json-2.3.min.js"></script>
-<script type="text/javascript" src="../js/Vendor.js"></script>
+<script type="text/javascript" src="/js/Vendor.js"></script>
 <title>phpdaemon Example</title>
 </head>
 <body>
