@@ -97,10 +97,12 @@ class VendorClientConnection extends NetworkClientConnection {
 		// append our data to any log file
 		if (Daemon::$debug) {
 			$file = fopen($this->logfile, 'a');
-			fwrite($file, $buf);
-			fwrite($file, "\n\n\n");
-			fclose($file);
-			Daemon::log('Received '.strlen($buf).' bytes of data. Adding to buffer');
+			if ($file !== false) {
+				fwrite($file, $buf);
+				fwrite($file, "\n\n\n");
+				fclose($file);
+			}
+			Daemon::log('Received '.strlen($buf).' bytes of data. Adding to buffer. Buffer length currently:'.strlen($this->buf));
 		}
 		
 		// apend new data to our input buffer
@@ -134,7 +136,10 @@ class VendorClientConnection extends NetworkClientConnection {
 						
 						// basic message checks passed
 						// fire event and pass this message off
-						$this->event('data_recvd', binarySubstr($this->buf, $pkt_start, $pkt_size));
+						$pkt = binarySubstr($this->buf, $pkt_start, $pkt_size);
+						// remove this packet from the buffer
+						$this->buf = binarySubstr($this->buf, $i + strlen($pkt));
+						$this->event('data_recvd', $pkt);
 					}
 				} else {
 					if (Daemon::$debug) {
