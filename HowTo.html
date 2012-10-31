@@ -1,0 +1,142 @@
+<!--
+To change this template, choose Tools | Templates
+and open the template in the editor.
+-->
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Basic phpdaemon Intro</title>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<style type="text/css">
+			pre {
+				margin-left: 25px;
+				margin-right: 25px;
+				border: 1px solid #0000FF;
+				background-color: #6699cc;
+			}
+		</style>
+	</head>
+	<body>
+		<div>
+			<h2>Basic HowTo for phpdaemon</h2>
+			<h4>What this HowTo covers:</h4>
+			<ul>
+				<li>Creating a simple appInstance</li>
+				<li>Presenting a web frontend to communicate with the appInstance</li>
+				<li>Communicating with the appInstance over a websocket (tested in Google Chrome only)</li>
+				<li>Establish TCP socket connection to remote host and send/receive data</li>
+				<li>Store/Retrieve data from MySQL server using MySQL client built into phpdaemon</li>
+				<li>Some simple notes on closures in PHP. Note: I am just learning how to use closures so be warned.</li>
+			</ul>
+			
+			<p><strong>Installation:</strong> Detailed installation instructions 
+				on my site at <a href="http://jamesmcrow.com/node/4">phpdaemon Install on Ubuntu 12.04</a>
+				. Basically just clone the repo into /opt/phpdaemon and link /usr/local/bin/phpd to /opt/phpdaemon/bin/phpd.
+				Configuration will be covered throughout the tutorial
+			</p>
+			<p><strong>Initial Configuration:</strong> To start just copy and paste this file into /opt/phpdaemon/conf/phpd.conf</p>
+			<pre>
+## Config file
+
+user nobody;
+group nobody;
+
+max-workers	1;
+min-workers	1;
+start-workers	1;
+max-idle	0;
+
+
+Pool:HTTPServer {
+	# you can redefine default settings for FastCGI
+	#privileged;
+	port 8000;
+	#listen 127.0.0.1;
+	#responder "ServerStatus";
+	#responder "Example";
+}
+
+Pool:WebSocketServer {
+#	listen-port 8047;
+#	listen 127.0.0.1;
+}
+
+Vendor {
+	sqlhost '127.0.0.1';
+	sqluser 'test';
+	sqlpass 'password';
+	sqldb 'test_db';
+	sqltable 'test_table';
+	vendorhosts '127.0.0.1';
+	vendorport '12345';
+	trans_query = 'SELECT * 
+		FROM test_table';
+}
+
+			</pre> <p>This configures the HTTP server to listen on port 8000 instead 
+			of the usual port 80. The WebSocket server is also enabled. The Vendor
+			section holds the details for the new appInstance. Everything should 
+			be fairly self explanatory. We will start a netcat instance to listen 
+			on port 12345 to see what is sent and allow us to respond.</p>
+			
+			<p><strong>Init script:</strong> For Ubuntu 12.04 I created a basic 
+				script to start/stop phpd. It is in the init-scripts directory. 
+				Copy it to /etc/init.d and rename to just phpd. Then to control phpdaemon:
+			<ul><li>Start: sudo service phpd start</li>
+				<li>Stop: sudo service phpd stop</li>
+			</ul>
+			RedHat based distributions can use the script named phpd from the init-scripts directory.
+			
+			</p>
+			
+			<p><strong>MySQL Setup:</strong> You will need MySQl configured with a user named "test" with password "password."
+			Feel free to adjust the configuration file to use a different account. You will 
+			also need a test database and table. I used test_db and test_table, respectively.
+			Make sure the test table has an id column as its first column. The id column
+			should be AUTH_INCREMENT and type INT. Ensure the test_table has a few columns, 
+			the example here will use all the columns from the table. Keep the column count low; maybe 4 or 5 to start with.  
+			Also make sure you insert a few rows of data.</p>
+			
+			<p><strong>First Run:</strong> Start netcat to act as the remote server. (nc -klvnp 12345). 
+				Start the phpdaemon service. Output should look something like this:</p>
+			<pre>
+$ sudo service phpd start
+ * Starting php daemon phpd                                                                                                                                        * Starting the phpd daemon. start-stop-daemon return status: 0
+[PHPD] M#23686 Pool-HTTPServer up.
+[PHPD] M#23686 Pool-WebSocketServer up.
+[warn] Added a signal to event base 0x29cd050 with signals already added to event_base 0x29aed90.  Only one can have signals at a time with the epoll backend.  The base with the most recently added signal or the most recent event_base_loop() call gets preference; do not rely on this behavior in future Libevent versions.
+[PHPD] W#23692 Vendor up.
+[PHPD] VendorClientConnection::onConnected called. Connected to host:127.0.0.1
+[PHPD] W#23692 ServerStatus up.
+[PHPD] Vendor connected at 127.0.0.1:12345
+[PHPD] Adding a callback for event: data_recvd
+[PHPD] Adding a callback for event: disconnect
+[PHPD] Adding a callback for event: data_sent
+
+			</pre><p>During phpdaemon startup you should see the VEndor app starting as well as,
+				the connection to 127.0.0.1:12345.<br />
+			Now try to connect to localhost on port 8000. <a href="http://localhost:8000/Vendor/">http://localhost:8000/Vendor/</a>
+		Note: Make sure you include the trailing slash. The regex in AppResolver.php 
+		searches for the trailing slash and will not match without it.</p>
+			
+			<p>You should see a simple page open listing the items from your test table. 
+				Watch the console where you started phpd for any errors.</p>
+			
+			<p>When you click on a row in the HTML table, JavaScript will first 
+			open a websocket, and then send a JSON encoded object to phpd. This 
+			object will contain a command (send_trans in the example) and a trans_id 
+			(this comes from the database).</p>
+		
+			<p><strong>Vendor Class:</strong> The Vendor class contains the main program 
+			(an extension of appInstance from the base phpdaemon code). It creates 
+			the MySQL connection as well as establishes the initial TCP connection 
+			to the remote TCP socket. In addition, Vendor also establishes the 
+			WebSocket route so websocket requests get handled correctly.</p>
+			
+			<p><strong>VendorWebSocketRoute:</strong> VendorWebSocketRoute handles 
+			the incoming websocket requests. It has an onFrame() method that gets 
+			called when new data arrives from the websocket.</p>
+		
+		</div>
+	</body>
+</html>
