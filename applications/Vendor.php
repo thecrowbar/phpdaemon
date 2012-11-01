@@ -169,6 +169,8 @@ class Vendor extends AppInstance{
 							if (!$success) {
 								Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
 								return;
+							}else {
+								Daemon::log('Got MySQL Connection!');
 							}
 							
 							// build our query to retrieve the original request data from the DB
@@ -186,6 +188,9 @@ class Vendor extends AppInstance{
 							// execute a query to retrieve the original transaction
 							$query = "SELECT * FROM fd_test_trans
 									WHERE {$sql_string}";
+							if (Daemon::$debug) {
+								Daemon::log('About to execute query:'.$query);
+							}
 							$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
 								// TODO update the client via websocket and update the database
 
@@ -196,23 +201,38 @@ class Vendor extends AppInstance{
 								}
 								
 								// add data from the original trans into our new object
-								$msg->original_trans_id = $sql_results[0]['id'];
-								$msg->original_trans_amount = $sql_results[0]['trans_amount'];
-								$msg->pri_acct_no = $sql_results[0]['pri_acct_no'];
-								$msg->credit_card = new CreditCard($msg->pri_acct_no);
-								$msg->card_type = $msg->credit_card->card_type;
+								try{
+									$msg->original_trans_id = $sql_results[0]['id'];
+									$msg->original_trans_amount = $sql_results[0]['trans_amount'];
+									$msg->pri_acct_no = $sql_results[0]['pri_acct_no'];
+									$msg->credit_card = new CreditCard($msg->pri_acct_no);
+									$msg->card_type = $msg->credit_card->card_type;
+									if (Daemon::$debug) {
+										Daemon::log('Finsihed adding data from original trans!');
+									}
+								}catch(Exception $e){
+									Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
+								}
 								
 								// at this point we have a complete transaction response
 								// we need to update the original transaction in the database
 								
 								// updat the client over websocket that we received a response
 								if (is_object($app->ws)) {
-									$resp = new VendorClientMessage();
-									$resp->response = "This is response text";
-									$resp->trans_id = $msg->original_trans_id;
-									$resp->auth_iden_resp = $msg->getDataForBit(38);
-									$resp->response_code = $msg->getDataForBit(39);
-									$app->ws->client->sendFrame(json_encode($resp), 'STRING');
+									try {
+										$resp = new VendorClientMessage();
+										$resp->response = "This is response text";
+										$resp->trans_id = $msg->original_trans_id;
+										if ($msg->dataExistsForBit(38)) {
+											$resp->auth_iden_resp = $msg->getDataForBit(38);
+										}
+										if ($msg->dataExistsForBit(39)) {
+											$resp->response_code = $msg->getDataForBit(39);
+										}
+										$app->ws->client->sendFrame(json_encode($resp), 'STRING');
+									}catch(Exception $e) {
+										Daemon::log('Exception caught trying to create object for websocket! Exception:'.$e);
+									}
 								} else {
 									if (Daemon::$debug){
 										Daemon::log(Debug::dump($app));
