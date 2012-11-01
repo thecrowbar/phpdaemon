@@ -47,6 +47,10 @@ class IPCManager extends AppInstance {
 	}
 
 
+	public function ensureConnection() {
+		$this->sendPacket('');
+	}
+
 	public function sendPacket($packet = null) {
 		if ($this->conn && $this->conn->connected) {
 			$this->conn->sendPacket($packet);
@@ -78,6 +82,9 @@ class IPCManagerMasterPoolConnection extends Connection {
 
 	public $spawnid;
 	public function onPacket($p) {
+		if (!is_array($p)) {
+			return;
+		}
 		if ($p['op'] === 'start') {
 			$this->spawnid = $p['spawnid'];
 			Daemon::$process->workers->threads[$this->spawnid]->connection = $this;

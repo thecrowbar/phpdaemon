@@ -68,7 +68,8 @@ class Daemon_WorkerThread extends Thread {
 		$this->fileWatcher = new FileWatcher;
 
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
-		$this->IPCManager->sendPacket();
+		$this->IPCManager->ensureConnection();
+		
 		Daemon::$appResolver->preload();
 
 		foreach (Daemon::$appInstances as $app) {
@@ -84,6 +85,8 @@ class Daemon_WorkerThread extends Thread {
 
 		Timer::add(function($event) {
 			$self = Daemon::$process;
+
+			$this->IPCManager->ensureConnection();
 
 			if ($self->checkState() !== TRUE) {
 				$self->breakMainLoop = TRUE;
@@ -114,6 +117,7 @@ class Daemon_WorkerThread extends Thread {
 			event_base_loop($this->eventBase);
 		}
 	}
+
 	/**
 	 * Overrides native PHP functions.
 	 * @return void
