@@ -110,11 +110,12 @@ $ sudo service phpd start
 [PHPD] Adding a callback for event: disconnect
 [PHPD] Adding a callback for event: data_sent
 
-			</pre><p>During phpdaemon startup you should see the VEndor app starting as well as,
+			</pre><p>During phpdaemon startup you should see the Vendor app starting, as well as,
 				the connection to 127.0.0.1:12345.<br />
-			Now try to connect to localhost on port 8000. <a href="http://localhost:8000/Vendor/">http://localhost:8000/Vendor/</a>
-		Note: Make sure you include the trailing slash. The regex in AppResolver.php 
-		searches for the trailing slash and will not match without it.</p>
+			Now try to connect to localhost on port 8000. 
+			<a href="http://localhost:8000/Vendor/">http://localhost:8000/Vendor/</a>
+			Note: Make sure you include the trailing slash. The regex in AppResolver.php 
+			searches for the trailing slash and will not match without it.</p>
 			
 			<p>You should see a simple page open listing the items from your test table. 
 				Watch the console where you started phpd for any errors.</p>
