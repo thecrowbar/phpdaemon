@@ -142,123 +142,7 @@ class Vendor extends AppInstance{
 				// add event handlers to process incoming messages and reconnect
 				// automatically when the connection disconnects
 				$conn->addEventHandler('data_recvd', function($msg) use ($conn, $app) {
-					// this closure handles the incoming data
-					// VendorClientConnection has done basic sanity checks to ensure 
-					// a complete message has made it through
-					if (Daemon::$debug) {
-						Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
-					}
-					
-					// $msg is a string of bytes from TCP socket convert it into an object
-					try {
-						$iso_msg = new ISO8583Trans();
-						$iso_msg->addTCPMessage($msg);
-						$msg = $iso_msg;
-					} catch(Exception $e){
-						Daemon::log('Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
-					}
-					if ($msg->msg_type === ISO8583::MSG_TYPE_AUTH_RESP 
-							|| $msg->msg_type === ISO8583::MSG_TYPE_REV_RESP) {
-						// this is a repsone to one of our messages, we need some information from the database
-						if (Daemon::$debug) {
-							Daemon::log('Processing an AUTH_RESP or REV_RESP message');
-						}
-						// get a MySQl connection to update the record in the DB
-						$sql = $app->sql->getConnection(function($sql, $success) use ($conn, $app, $msg){
-							// check for successful connection
-							if (!$success) {
-								Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
-								return;
-							}else {
-								Daemon::log('Got MySQL Connection!');
-							}
-							
-							// build our query to retrieve the original request data from the DB
-							$fields = array('receipt_number', 'terminal_id', 'merchant_id');
-							$sql_string = '';
-							foreach($fields as $field) {
-								if ($msg->$field !== -1) {
-									if (strlen($sql_string) > 0) {
-										$sql_string .= " AND {$field}='{$msg->$field}' ";
-									} else {
-										$sql_string = "{$field}='{$msg->$field}' ";
-									}
-								}
-							}
-							// execute a query to retrieve the original transaction
-							$query = "SELECT * FROM fd_test_trans
-									WHERE {$sql_string}";
-							if (Daemon::$debug) {
-								Daemon::log('About to execute query:'.$query);
-							}
-							$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
-								// TODO update the client via websocket and update the database
-
-								// get the data we need from our Database
-								$sql_results = $sql->resultRows;
-								if (count($sql_results) !== 1) {
-									Daemon::log('Incorrect number of results found for query:'.$query);
-								}
-								
-								// add data from the original trans into our new object
-								try{
-									$msg->original_trans_id = $sql_results[0]['id'];
-									$msg->original_trans_amount = $sql_results[0]['trans_amount'];
-									$msg->pri_acct_no = $sql_results[0]['pri_acct_no'];
-									$msg->credit_card = new CreditCard($msg->pri_acct_no);
-									$msg->card_type = $msg->credit_card->card_type;
-									if (Daemon::$debug) {
-										Daemon::log('Finsihed adding data from original trans!');
-									}
-								}catch(Exception $e){
-									Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
-								}
-								
-								// at this point we have a complete transaction response
-								// we need to update the original transaction in the database
-								
-								// updat the client over websocket that we received a response
-								if (is_object($app->ws)) {
-									try {
-										$resp = new VendorClientMessage();
-										$resp->response = "This is response text";
-										$resp->trans_id = $msg->original_trans_id;
-										if ($msg->dataExistsForBit(38)) {
-											$resp->auth_iden_resp = $msg->getDataForBit(38);
-										}
-										if ($msg->dataExistsForBit(39)) {
-											$resp->response_code = $msg->getDataForBit(39);
-										}
-										$app->ws->client->sendFrame(json_encode($resp), 'STRING');
-									}catch(Exception $e) {
-										Daemon::log('Exception caught trying to create object for websocket! Exception:'.$e);
-									}
-								} else {
-									if (Daemon::$debug){
-										Daemon::log(Debug::dump($app));
-									}
-									Daemon::log('$app->ws is not an object! Unable to send response over websocket!');
-								}
-								
-								
-								// output some basic debugging data to view
-								Daemon::log($msg->getBasicDebugData());
-								if (method_exists($msg, 'getBit63DebugData')){
-									Daemon::log($msg->getBit63DebugData());
-								}
-							});
-							
-						});
-						// check if our SQL connection failed
-						if (Daemon::$debug) {
-							if ($sql->connected){
-								Daemon::log('$sql->connected == true');
-							}else {
-								Daemon::log('$sql->connected !== true');
-							}
-							//Daemon::log(print_r($sql, true));
-						}
-					}
+					$app->processReceivedData($msg, $conn, $app);
 					
 				});
 				
@@ -267,7 +151,7 @@ class Vendor extends AppInstance{
 					$app->connect();
 				});
 				
-				// add a handler for when a data is sent
+				// add a handler for when data is sent
 				$conn->addEventHandler('data_sent', function() use ($app){
 					// this is really just for testing
 					Daemon::log(get_class($app). ' data_sent callback fired!');
@@ -281,6 +165,193 @@ class Vendor extends AppInstance{
 			Daemon::log('Exception caught! $e:'.$e);
 		}
 
+	}
+	
+	/**
+	 * processReceivedData() - process the data returned by the remote vendor
+	 * @param ISO8583Trans $msg - the data received from the vendor
+	 * @param VencodrClientConnection $conn - the remote connection
+	 * @param Vendor $app - a link back to this object
+	 */
+	public function processReceivedData($msg, $conn, $app){
+		// this closure handles the incoming data
+		// VendorClientConnection has done basic sanity checks to ensure 
+		// a complete message has made it through
+		if (Daemon::$debug) {
+			Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
+		}
+
+		// $msg is a string of bytes from TCP socket convert it into an object
+		try {
+			$iso_msg = new ISO8583Trans();
+			$iso_msg->addTCPMessage($msg);
+			$msg = $iso_msg;
+		} catch(Exception $e){
+			Daemon::log('Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
+		}
+		if ($msg->msg_type === ISO8583::MSG_TYPE_AUTH_RESP 
+				|| $msg->msg_type === ISO8583::MSG_TYPE_REV_RESP) {
+			// this is a repsone to one of our messages, we need some information from the database
+			if (Daemon::$debug) {
+				Daemon::log('Processing an AUTH_RESP or REV_RESP message');
+			}
+			// get a MySQl connection to update the record in the DB
+			$sql = $app->sql->getConnection(function($sql, $success) use ($conn, $app, $msg){
+				// check for successful connection
+				if (!$success) {
+					Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
+					return;
+				}else {
+					Daemon::log('Got MySQL Connection!');
+				}
+
+				$query = Vendor::buildQueryForOriginalTrans($msg);
+				if (Daemon::$debug) {
+					Daemon::log('About to execute query:'.$query);
+				}
+				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
+					// TODO update the client via websocket and update the database
+
+					// get the data we need from our Database
+					$sql_results = $sql->resultRows;
+					if (count($sql_results) !== 1) {
+						Daemon::log('Incorrect number of results found for query:'.$query);
+					}
+
+					// add data from the original trans into our new object
+					try{
+						$msg->original_trans_id = $sql_results[0]['id'];
+						$msg->original_trans_amount = $sql_results[0]['trans_amount'];
+						$msg->pri_acct_no = $sql_results[0]['pri_acct_no'];
+						$msg->credit_card = new CreditCard($msg->pri_acct_no);
+						$msg->card_type = $msg->credit_card->card_type;
+						if (Daemon::$debug) {
+							Daemon::log('Finsihed adding data from original trans!');
+						}
+					}catch(Exception $e){
+						Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
+					}
+
+					// at this point we have a complete transaction response
+					// we need to update the original transaction in the database
+					$app->updateTransInDB($msg, $app);
+					
+
+					// update the client over websocket that we received a response
+					if (is_object($app->ws)) {
+						$app->updateClientWS($app->ws, $msg);
+					} else {
+						if (Daemon::$debug){
+							Daemon::log(Debug::dump($app));
+						}
+						Daemon::log('$app->ws is not an object! Unable to send response over websocket!');
+					}
+
+
+					// output some basic debugging data to view
+					Daemon::log($msg->getBasicDebugData());
+					if (method_exists($msg, 'getBit63DebugData')){
+						Daemon::log($msg->getBit63DebugData());
+					}
+				});
+
+			});
+			// check if our SQL connection failed
+			if (Daemon::$debug) {
+				if ($sql->connected){
+					Daemon::log('$sql->connected == true');
+				}else {
+					Daemon::log('$sql->connected !== true');
+				}
+				//Daemon::log(print_r($sql, true));
+			}
+		}
+	}
+	
+	/**
+	 * updateClientWS() - send an update to the remote client over websocket
+	 * @param Closure $ws - the callback that has access to the client websocket
+	 * @param ISO8583Trans $msg - the message object received from the remote vendor
+	 */
+	public function updateClientWS($ws, $msg) {
+		try {
+			$resp = new VendorClientMessage();
+			$resp->response = "This is response text";
+			$resp->trans_id = $msg->original_trans_id;
+			if ($msg->dataExistsForBit(38)) {
+				$resp->auth_iden_resp = $msg->getDataForBit(38);
+			}
+			if ($msg->dataExistsForBit(39)) {
+				$resp->response_code = $msg->getDataForBit(39);
+			}
+			$ws->client->sendFrame(json_encode($resp), 'STRING');
+		}catch(Exception $e) {
+			Daemon::log('Exception caught trying to create object for websocket! Exception:'.$e);
+		}
+	}
+	
+	/**
+	 * updateTransInDB() - save the response from the remote vendor for this message
+	 * @param ISO8583Trans $msg - the message returned from the remote vendor
+	 */
+	public function updateTransInDB($msg, $app) {
+		//FIXME
+		//TODO Update this code
+		$app->sql->getConnection(function($sql, $success) use ($conn, $app, $msg){
+			// check for successful connection
+			if (!$success) {
+				Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
+				return;
+			}else {
+				Daemon::log('Got MySQL Connection!');
+			}
+			
+			// create our update query
+			$auth_iden_sql = '';
+			if ($msg->dataExistsForBit(38)) {
+				$auth_iden_sql = " auth_iden_resp='{$msg->getDataForBit(38)}' ";
+			}
+			
+			$resp_code_sql = '';
+			if ($msg->dataExistsForBit(39)) {
+				$resp_code_sql = " response_code = '{$msg->getDataForBit(39)}' ";
+			}
+			
+			$query = "UPDATE fd_test_trans SET {$auth_iden_sql}, {$resp_code_sql}
+				WHERE id = {$msg->original_trans_id}";
+				
+			$sql->query($query, function($sql, $success) use($app, $msg){
+				if ($success) {
+					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id);
+				} else {
+					Daemon::log('Error updating DB! query:'.$query);
+				}
+			});
+		});
+	}
+	
+	/**
+	 * Build the query to retrieve the transaction details of the original transaction
+	 * @param ISO8583Trans $msg - the ISO8583 message returned from remote vendor
+	 * @return string
+	 */
+	public static function buildQueryForOriginalTrans($msg) {
+		// build our query to retrieve the original request data from the DB
+		$fields = array('receipt_number', 'terminal_id', 'merchant_id');
+		$sql_string = '';
+		foreach($fields as $field) {
+			if ($msg->$field !== -1) {
+				if (strlen($sql_string) > 0) {
+					$sql_string .= " AND {$field}='{$msg->$field}' ";
+				} else {
+					$sql_string = "{$field}='{$msg->$field}' ";
+				}
+			}
+		}
+		// execute a query to retrieve the original transaction
+		$query = "SELECT * FROM fd_test_trans
+				WHERE {$sql_string}";
+		return $query;
 	}
 	
 	

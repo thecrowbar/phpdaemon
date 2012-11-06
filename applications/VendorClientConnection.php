@@ -190,6 +190,9 @@ class VendorClientConnection extends NetworkClientConnection {
 			$this->eventHandlers[$event] = array();
 		}
 		$this->eventHandlers[$event][] = $cb;
+		if (Daemon::$debug) {
+			Daemon::log('There are now '.count($this->eventHandlers[$event]).' handlers defined for event: '.$event);
+		}
 	}
 	
 	/**

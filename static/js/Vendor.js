@@ -59,9 +59,11 @@ $(document).ready(function(){
 		$(this).on('click', function(tid){
 			// send the trans action if this row is clicked
 			var tid = $(this).attr('trans_id');
+			var title_str = $(this).attr('title');
 			var obj = {
 				command: 'send_trans',
-				trans_id: tid
+				trans_id: tid,
+				title: title_str
 			}
 
 			sendObject(obj);
