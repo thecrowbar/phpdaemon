@@ -210,8 +210,6 @@ class Vendor extends AppInstance{
 					Daemon::log('About to execute query:'.$query);
 				}
 				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
-					// TODO update the client via websocket and update the database
-
 					// get the data we need from our Database
 					$sql_results = $sql->resultRows;
 					if (count($sql_results) !== 1) {
@@ -297,7 +295,7 @@ class Vendor extends AppInstance{
 	public function updateTransInDB($msg, $app) {
 		//FIXME
 		//TODO Update this code
-		$app->sql->getConnection(function($sql, $success) use ($conn, $app, $msg){
+		$app->sql->getConnection(function($sql, $success) use ($app, $msg){
 			// check for successful connection
 			if (!$success) {
 				Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
@@ -309,7 +307,7 @@ class Vendor extends AppInstance{
 			// create our update query
 			$auth_iden_sql = '';
 			if ($msg->dataExistsForBit(38)) {
-				$auth_iden_sql = " auth_iden_resp='{$msg->getDataForBit(38)}' ";
+				$auth_iden_sql = " auth_iden_response='{$msg->getDataForBit(38)}' ";
 			}
 			
 			$resp_code_sql = '';
@@ -320,10 +318,12 @@ class Vendor extends AppInstance{
 			$query = "UPDATE fd_test_trans SET {$auth_iden_sql}, {$resp_code_sql}
 				WHERE id = {$msg->original_trans_id}";
 				
-			$sql->query($query, function($sql, $success) use($app, $msg){
+			$sql->query($query, function($sql, $success) use($app, $msg, $query){
 				if ($success) {
-					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id);
+					//Daemon::log(Debug::dump($sql));
+					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id.' query:'.$query);
 				} else {
+					//Daemon::log(Debug::dump($sql));
 					Daemon::log('Error updating DB! query:'.$query);
 				}
 			});
