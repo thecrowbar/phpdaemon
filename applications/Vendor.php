@@ -361,14 +361,23 @@ class Vendor extends AppInstance{
 		return $query;
 	}
 	
+	/**
+	 * checkOutboundQueue() - check outbound queue for message and send
+	 * @param Vendor $app
+	 */
 	public function checkOutboundQueue($app){
 		// if there any items in the queue then send one off 
 		if (count($app->tq) > 0) {
-			// item exists in queue
-			$app->vendorclient->getConnection(function($conn) use ($app){
+			// item exists in queue; check connection
+			while (!$app->vendorconn->connected) {
+				$app->connect();
+				if (Daemon::$debug) {
+					Daemon::log('Sleeping 10 seconds to wait for connection to establish');
+				}
+				//sleep(10);
+			}
 				$msg = $app->tq->dequeue();
-				$conn->sendData($msg->getTCPMessage());
-			});
+				$app->vendorconn->sendData($msg->getTCPMessage());
 			//$conn = $app->get
 		}
 	}
@@ -435,10 +444,13 @@ class Vendor extends AppInstance{
 						try {
 							// TODO change this for your own needs
 							$app->vendorMessage = new VendorMessage($db_row);
+							
+							// add the message to our queue
+							$app->tq->enqueue($app->vendorMessage);
 
 							// send the data to the remote vendor
-							$app->vendorclient->getConnection(function($conn) use ($app){
-								$conn->sendData($app->vendorMessage->getTCPMessage());
+							$app->connect(function($conn) use ($app){
+								$app->checkOutboundQueue($app);
 							});
 							$job->setResult($name, 'Sent message data');
 						}catch(Exception $ex) {
