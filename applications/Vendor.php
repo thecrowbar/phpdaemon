@@ -122,6 +122,13 @@ class Vendor extends AppInstance{
 		WebSocketServer::getInstance()->addRoute('VendorWS', function ($client) use ($appInstance) {
 			return new VendorWebSocketRoute($client, $appInstance);
 		});
+		
+		// start a timer to check the outbound queue every 90 seconds
+		$app = $this;
+		$this->keepaliveTimer = setTimeout(function($timer) use($app) {
+			//Daemon::log('timer callback firing');
+			$app->checkOutboundQueue($app);
+		}, 1e6 * 90);
 	}
 	
 	/**
@@ -205,7 +212,7 @@ class Vendor extends AppInstance{
 					Daemon::log('Got MySQL Connection!');
 				}
 
-				$query = Vendor::buildQueryForOriginalTrans($msg);
+				$query = Vendor::buildQueryForOriginalTrans($msg, $app);
 				if (Daemon::$debug) {
 					Daemon::log('About to execute query:'.$query);
 				}
@@ -315,13 +322,13 @@ class Vendor extends AppInstance{
 				$resp_code_sql = " response_code = '{$msg->getDataForBit(39)}' ";
 			}
 			
-			$query = "UPDATE fd_test_trans SET {$auth_iden_sql}, {$resp_code_sql}
+			$query = "UPDATE {$app->config->sqltable->value} SET {$auth_iden_sql}, {$resp_code_sql}
 				WHERE id = {$msg->original_trans_id}";
 				
 			$sql->query($query, function($sql, $success) use($app, $msg, $query){
 				if ($success) {
 					//Daemon::log(Debug::dump($sql));
-					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id.' query:'.$query);
+					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id); //.' query:'.$query);
 				} else {
 					//Daemon::log(Debug::dump($sql));
 					Daemon::log('Error updating DB! query:'.$query);
@@ -335,7 +342,7 @@ class Vendor extends AppInstance{
 	 * @param ISO8583Trans $msg - the ISO8583 message returned from remote vendor
 	 * @return string
 	 */
-	public static function buildQueryForOriginalTrans($msg) {
+	public static function buildQueryForOriginalTrans($msg, $app) {
 		// build our query to retrieve the original request data from the DB
 		$fields = array('receipt_number', 'terminal_id', 'merchant_id');
 		$sql_string = '';
@@ -349,12 +356,22 @@ class Vendor extends AppInstance{
 			}
 		}
 		// execute a query to retrieve the original transaction
-		$query = "SELECT * FROM fd_test_trans
+		$query = "SELECT * FROM {$app->config->sqltable->value}
 				WHERE {$sql_string}";
 		return $query;
 	}
 	
-	
+	public function checkOutboundQueue($app){
+		// if there any items in the queue then send one off 
+		if (count($app->tq) > 0) {
+			// item exists in queue
+			$app->vendorclient->getConnection(function($conn) use ($app){
+				$msg = $app->tq->dequeue();
+				$conn->sendData($msg->getTCPMessage());
+			});
+			//$conn = $app->get
+		}
+	}
 	
 	/**
 	 * Creates Request.
