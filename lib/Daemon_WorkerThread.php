@@ -30,8 +30,7 @@ class Daemon_WorkerThread extends Thread {
 	public $delayedSigReg = TRUE;
 	public $instancesCount = array();
 	public $connection;
-	public $fileWatcher;
-
+	public $counterGC = 0;
 	/**
 	 * Runtime of Worker process.
 	 * @return void
@@ -44,6 +43,8 @@ class Daemon_WorkerThread extends Thread {
 			Daemon::$logpointerAsync->fd = null;
 			Daemon::$logpointerAsync = null;
 		}
+		class_exists('Timer');
+		class_exists('Daemon_TimedEvent');
 		$this->autoReloadLast = time();
 		$this->reloadDelay = Daemon::$config->mpmdelay->value + 2;
 		$this->setStatus(4);
@@ -65,10 +66,8 @@ class Daemon_WorkerThread extends Thread {
 		FS::initEvent();
 		Daemon::openLogs();
 
-		$this->fileWatcher = new FileWatcher;
 
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
-		$this->IPCManager->ensureConnection();
 		
 		Daemon::$appResolver->preload();
 
@@ -86,7 +85,7 @@ class Daemon_WorkerThread extends Thread {
 		Timer::add(function($event) {
 			$self = Daemon::$process;
 
-			$this->IPCManager->ensureConnection();
+			$self->IPCManager->ensureConnection();
 
 			if ($self->checkState() !== TRUE) {
 				$self->breakMainLoop = TRUE;
@@ -102,10 +101,10 @@ class Daemon_WorkerThread extends Thread {
 
 				static $n = 0;
 
-				$inc = array_unique(array_map('realpath', get_included_files()));
-				$s = sizeof($inc);
+				$list = get_included_files();
+				$s = sizeof($list);
 				if ($s > $n) {
-					$slice = array_slice($inc, $n);
+					$slice = array_map('realpath', array_slice($list, $n));
 					Daemon::$process->IPCManager->sendPacket(array('op' => 'addIncludedFiles', 'files' => $slice));
 					$n = $s;
 				}
@@ -484,12 +483,11 @@ class Daemon_WorkerThread extends Thread {
 				event_base_loopexit($self->eventBase);
 			}
 		}, 1e6, 'checkReloadReady');
-
 		while (!$this->reloadReady) {
 			event_base_loop($this->eventBase);
 		}
 		//FS::waitAllEvents(); // ensure that all I/O events completed before suicide
-		posix_kill(posix_getppid(), SIGCHLD); // praying to Master
+		//posix_kill(posix_getppid(), SIGCHLD);
 		exit(0); // R.I.P.
 	}
 
@@ -499,7 +497,7 @@ class Daemon_WorkerThread extends Thread {
 	 * @return boolean - Success.
 	 */
 	public function setStatus($int) {
-		if (!$this->spawnid) {
+		if (!$this->id) {
 			return FALSE;
 		}
 
@@ -513,7 +511,7 @@ class Daemon_WorkerThread extends Thread {
 			$this->log('status is ' . $int);
 		}
 
-		return shmop_write(Daemon::$shm_wstate, chr($int), $this->spawnid - 1);
+		return shmop_write(Daemon::$shm_wstate, chr($int), $this->id - 1);
 	}
 
 	/**

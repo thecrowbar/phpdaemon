@@ -17,8 +17,6 @@ class Request {
 	const STATE_RUNNING  = 2;
 	const STATE_SLEEPING = 3;
 	public $conn;
- 
-	public $queueId;
 	public $appInstance;
 	public $aborted = FALSE;
 	public $state = self::STATE_ALIVE;
@@ -41,20 +39,14 @@ class Request {
 	 */
 	public function __construct($appInstance, $upstream, $parent = NULL) {
 		$this->appInstance = $appInstance;
-		$this->upstream = $upstream;		
-		$this->queueId = isset($parent->queueId)?$parent->queueId:(++Daemon::$process->reqCounter);
-		$this->ev = event_new();
- 
-		event_set(
-			$this->ev, STDIN, EV_TIMEOUT, 
-			array($this, 'eventCall'), 
-			array($this->queueId)
-		);
+		$this->upstream = $upstream;
+		$this->ev = event_timer_new();
+		event_timer_set($this->ev, array($this, 'eventCall'));
 		event_base_set($this->ev, Daemon::$process->eventBase);
 		if ($this->priority !== null) {
 			event_priority_set($this->ev, $this->priority);
 		}
-		event_add($this->ev, 1);
+		event_timer_add($this->ev, 1);
 				
 		$this->preinit($parent);
 		$this->onWakeup();
@@ -71,28 +63,22 @@ class Request {
 	/**
 	 * @todo description is missing
 	 */
-	public function eventCall($fd, $flags, $arg) {
-		$k = $arg[0];
-		$req = $this;
-		
-		if ($req->state === Request::STATE_SLEEPING) {
-			$req->state = Request::STATE_ALIVE;
+	public function eventCall($fd, $flags, $arg) {		
+		if ($this->state === Request::STATE_SLEEPING) {
+			$this->state = Request::STATE_ALIVE;
 		}
-	
-		$ret = $req->call();
-	
- 
+		$ret = $this->call();
 		if ($ret === Request::STATE_FINISHED) {		
 			$this->free();
 
 		}
 		elseif ($ret === REQUEST::STATE_SLEEPING) {
-			event_add($req->ev, $req->sleepTime);
+			event_add($this->ev, $this->sleepTime);
 		}
 	}
 	public function free() {
 		if (is_resource($this->ev)) {
-			event_del($this->ev);
+			event_timer_del($this->ev);
 			event_free($this->ev);
 		}
 		if (isset($this->conn)) {
@@ -277,7 +263,6 @@ class Request {
 	public function codepoint($p) {
 		if ($this->codepoint !== $p) {
 			$this->codepoint = $p;
- 
 			return TRUE;
 		}
  
@@ -305,8 +290,8 @@ class Request {
 			throw new RequestSleepException;
 		}
 		else {
-			event_del($this->ev);
-			event_add($this->ev, $this->sleepTime);
+			event_timer_del($this->ev);
+			event_timer_add($this->ev, $this->sleepTime);
 		}
  
 		$this->state = Request::STATE_SLEEPING;
@@ -331,8 +316,8 @@ class Request {
 	public function wakeup() {
 		if (is_resource($this->ev)) {
 			$this->state = Request::STATE_ALIVE;
-			event_del($this->ev);
-			event_add($this->ev, 1);
+			event_timer_del($this->ev);
+			event_timer_add($this->ev, 1);
 		}
 	}
 	
@@ -453,13 +438,7 @@ class Request {
 			return;
 		}
  
-		if (
-			(Daemon::$config->autogc->value > 0) 
-			&& (Daemon::$process->reqCounter > 0) 
-			&& (Daemon::$process->reqCounter % Daemon::$config->autogc->value === 0)
-		) {
-			gc_collect_cycles();
-		}
+		Daemon::callAutoGC();
  
 		if (Daemon::$compatMode) {
 			return;

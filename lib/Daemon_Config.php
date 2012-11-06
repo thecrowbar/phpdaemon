@@ -30,6 +30,7 @@ class Daemon_Config implements ArrayAccess {
 	public $minspareworkers = 20;
 	public $maxspareworkers = 50;
 	public $masterpriority  = 100;
+	public $ipcthreadpriority = 100;
 			 
 	// Requests
 	public $obfilterauto                   = 1;
@@ -38,7 +39,7 @@ class Daemon_Config implements ArrayAccess {
 	// Worker-related
 	public $user                     = NULL;
 	public $group                    = NULL;
-	public $autogc                   = '1';
+	public $autogc                   = '1000';
 	public $chroot                   = '/';
 	public $cwd                      = '.';
 	public $autoreload               = '0s';
@@ -49,7 +50,6 @@ class Daemon_Config implements ArrayAccess {
 			
 	// Logging-related
 	public $logging            = 1;
-	public $logtostderr        = 1;
 	public $logstorage         = '/var/log/phpdaemon.log';
 	public $logerrors          = 1;
 	public $logworkersetstatus = 0;
@@ -57,6 +57,8 @@ class Daemon_Config implements ArrayAccess {
 	public $logqueue           = 0;
 	public $logreads           = 0;
 	public $logsignals         = 0;
+	public $verbose = 0;
+	public $verbosetty = 0;
 	
 	// eio
 	public $eiosetmaxidle = null;
@@ -73,8 +75,8 @@ class Daemon_Config implements ArrayAccess {
 		static $sizes = array('maxmemoryusage');
 		static $times = array('maxidle', 'autoreload', 'mpmdelay', 'eiosetmaxpolltime');
 		static $numbers = array(
-			'maxrequests', 'autogc','minworkers','maxworkers','minspareworkers','maxspareworkers','masterpriority',
-			'eiosetmaxidle', 'eiosetmaxparallel', 'eiosetmaxpollreqs', 'eiosetminparallel',
+			'maxrequests', 'autogc','minworkers','maxworkers','minspareworkers','maxspareworkers','masterpriority', 'ipcthreadpriority',
+			'eiosetmaxidle', 'eiosetmaxparallel', 'eiosetmaxpollreqs', 'eiosetminparallel', 'verbose', 'verbosetty'
 		);
 
 		foreach ($this as $name => $value) {

@@ -76,11 +76,21 @@ class Daemon {
 
 		// currently re-using listener ports across multiple processes is available
 		// only in BSD flavour operating systems via SO_REUSEPORT socket option
-		Daemon::$reusePort = (boolean) preg_match("~BSD~i", php_uname('s'));
+		Daemon::$reusePort = 1 === preg_match("~BSD~i", php_uname('s'));
 		
-		if (Daemon::$reusePort)
-		if (!defined("SO_REUSEPORT"))
+		if (Daemon::$reusePort && !defined("SO_REUSEPORT"))
 		    define("SO_REUSEPORT", 0x200);	// FIXME: this is a BSD-only hack
+	}
+
+	public static function callAutoGC() {
+		if (
+			(Daemon::$config->autogc->value > 0) 
+			&& (Daemon::$process->counterGC > 0) 
+			&& (Daemon::$process->counterGC % Daemon::$config->autogc->value === 0)
+		) {
+			gc_collect_cycles();
+			++Daemon::$process->counterGC;
+		}
 	}
 
 	/**
@@ -94,20 +104,19 @@ class Daemon {
 		if ($s === '') {
 			return '';
 		}
-
+		++$n;
+		Daemon::$obInStack = true;
 		if (
 			Daemon::$config->obfilterauto->value
 			&& (Daemon::$req !== NULL)
 		) {
-			++$n;
-			Daemon::$obInStack = true;
 			Daemon::$req->out($s, false);
-			--$n;
-			Daemon::$obInStack = $n > 0;
+
 		} else {
 			Daemon::log('Unexcepted output (len. ' . strlen($s) . '): \'' . $s . '\'');
 		}
-
+		--$n;
+		Daemon::$obInStack = $n > 0;
 		return '';
 	}
 
@@ -445,13 +454,9 @@ class Daemon {
 	
 		$mt = explode(' ', microtime());
 
-		if (
-			Daemon::$config->logtostderr->value
-			&& defined('STDERR')
-		) {
+		if (is_resource(STDERR)) {
 			fwrite(STDERR, '[PHPD] ' . $msg . "\n");
 		}
-		
 		$msg = '[' . date('D, j M Y H:i:s', $mt[1]) . '.' . sprintf('%06d', $mt[0]*1000000) . ' ' . date('O') . '] ' . $msg . "\n";
 		if (Daemon::$logpointerAsync) {
 			Daemon::$logpointerAsync->write($msg);

@@ -9,6 +9,8 @@
  */
 abstract class Thread {
 
+	public $id;
+
 	/**
 	 * Process identificator
 	 * @var int
@@ -157,7 +159,7 @@ abstract class Thread {
 	 * Starts the process
 	 * @return void
 	 */
-	public function start($clearstack = false) {
+	public function start($clearstack = true) {
 		$pid = pcntl_fork();
 
 		if ($pid === -1) {
@@ -290,7 +292,6 @@ abstract class Thread {
 	 */
 	private function waitPid() {
 		$pid = pcntl_waitpid(-1, $status, WNOHANG);
-
 		if ($pid > 0) {
 			foreach ($this->collections as &$col) {
 				foreach ($col->threads as $k => &$t) {
