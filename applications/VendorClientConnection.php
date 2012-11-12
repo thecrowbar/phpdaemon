@@ -82,7 +82,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public function onFinish() {
 		parent::onFinish();
-		$this->event('disconnect');
+		$this->event('disconnect', $this->hostReal, $this->port);
 		
 		// remove our keep-alive timer to setop sending data to disconnected connection
 		Timer::remove($this->keepaliveTimer);
