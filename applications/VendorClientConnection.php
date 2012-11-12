@@ -52,7 +52,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		// create a timer to fire keep alive messages, default timeout = 90 secs
 		$conn = $this;
 		$this->keepaliveTimer = setTimeout(function($timer) use($conn) {
-			Daemon::log('timer callback firing');
+			Daemon::log(__METHOD__.' timer callback firing! About to send keep-alive ISO8583 message');
 			$conn->ping();
 		}, 1e6 * 90);
 		
@@ -189,7 +189,10 @@ class VendorClientConnection extends NetworkClientConnection {
 		if (!isset($this->eventHandlers[$event])) {
 			$this->eventHandlers[$event] = array();
 		}
-		$this->eventHandlers[$event][] = $cb;
+		// make sure we do not add the same callback multiple times
+		if (!in_array($cb, $this->eventHandlers[$event])) {
+			$this->eventHandlers[$event][] = $cb;
+		}
 		if (Daemon::$debug) {
 			Daemon::log('There are now '.count($this->eventHandlers[$event]).' handlers defined for event: '.$event);
 		}
@@ -215,10 +218,11 @@ class VendorClientConnection extends NetworkClientConnection {
 			
 			if ($send_result) {
 				// our transaction was sent
-				$this->event('data_sent');
+				$this->event('data_sent', strlen($data));
 			} else {
 				// our transaction failed...
-				Daemon::log('Failed to send data');
+				Daemon::log('Failed to send data using host '.$this->hostReal.':'.$this->port);
+				$this->connected = false;
 			}
 		}catch(Exception $ex) {
 			Daemon::log('Exception caught while trying to send data! Exception:'.$ex);
