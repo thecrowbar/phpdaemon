@@ -126,7 +126,7 @@ class Vendor extends AppInstance{
 		// start a timer to check the outbound queue every 90 seconds
 		$app = $this;
 		$this->keepaliveTimer = setTimeout(function($timer) use($app) {
-			//Daemon::log('timer callback firing');
+			Daemon::log(__METHOD__.' timer callback firing');
 			$app->checkOutboundQueue($app);
 		}, 1e6 * 90);
 	}
@@ -138,40 +138,84 @@ class Vendor extends AppInstance{
 	public function connect() {
 		//Daemon::log(__METHOD__.' running');
 		$app = $this;
-		try {
-		$obj = $app->vendorclient->getConnection( function ($conn) use ($app) {
-			$app->vendorconn = $conn;
-			if ($conn->connected) {
-				if (Daemon::$debug) {
-					Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
+		// check for a passed callback and execute it when the job completes
+		$args = func_get_args();
+		$callbacks = array();
+		if (count($args) > 0) {
+//			if (Daemon::$debug) {
+//				Daemon::log('connect() args:'.print_r($args, true));
+//			}
+			// make sure the argument is callable
+			foreach($args as $arg) {
+				if (is_object($arg) && is_callable($arg)) {
+					$callbacks[] = $arg;
+					if (Daemon::$debug) {
+						Daemon::log(__METHOD__.' callback added!');
+					}
+				} else {
+					Daemon::log($arg.' is not an object and not callable');
 				}
-				
-				// add event handlers to process incoming messages and reconnect
-				// automatically when the connection disconnects
-				$conn->addEventHandler('data_recvd', function($msg) use ($conn, $app) {
-					$app->processReceivedData($msg, $conn, $app);
-					
-				});
-				
-				// add an event handler to reconnect when the connection ends
-				$conn->addEventHandler('disconnect', function() use ($app) {
-					$app->connect();
-				});
-				
-				// add a handler for when data is sent
-				$conn->addEventHandler('data_sent', function() use ($app){
-					// this is really just for testing
-					Daemon::log(get_class($app). ' data_sent callback fired!');
-				});
 			}
-			else {
-				Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
-			}
-		});
-		}catch(Exception $e) {
-			Daemon::log('Exception caught! $e:'.$e);
 		}
+		if (Daemon::$debug) {
+			Daemon::log('Found '.count($callbacks).' callbacks for '.__METHOD__);
+		}
+		
+		// check our connection, if it is connected then we run callbacks and return
+		if ($app->vendorconn->connected) {
+			if (count($callbacks) > 0) {
+				foreach($callbacks as $cb) {
+					call_user_func($cb);
+				}
+			}
+			//return true;
+		} else {
+			try {
+				if (Daemon::$debug) {
+					Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
+				}
+				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
+					$app->vendorconn = $conn;
+					if ($conn->connected) {
+						if (Daemon::$debug) {
+							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
+						}
 
+						// add event handlers to process incoming messages and reconnect
+						// automatically when the connection disconnects
+						$conn->addEventHandler('data_recvd', function($msg) use ($conn, $app) {
+							$app->processReceivedData($msg, $conn, $app);
+
+						});
+
+						// add an event handler to reconnect when the connection ends
+						$conn->addEventHandler('disconnect', function() use ($app) {
+							$args = func_get_args();
+							Daemon::log('$args passed :'.print_r($args, true));
+							Daemon::log($conn->hostReal.':'.$conn->port.' disconnected. Attempting to reconnect');
+							$app->connect();
+						});
+
+						// add a handler for when data is sent
+						$conn->addEventHandler('data_sent', function($data_length) use ($app){
+							// this is really just for testing
+							Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
+						});
+
+						// call our callback functions
+						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
+						foreach($callbacks as $cb) {
+							call_user_func($cb);
+						}
+					}
+					else {
+						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+					}
+				});
+			}catch(Exception $e) {
+				Daemon::log('Exception caught! $e:'.$e);
+			}	
+		}
 	}
 	
 	/**
@@ -321,8 +365,12 @@ class Vendor extends AppInstance{
 			if ($msg->dataExistsForBit(39)) {
 				$resp_code_sql = " response_code = '{$msg->getDataForBit(39)}' ";
 			}
+			$sql_snippet = " {$auth_iden_sql} {$resp_code_sql}";
+			if (strlen($auth_iden_sql) > 0 && strlen($resp_code_sql) > 0) {
+				$sql_snippet = " {$auth_iden_sql}, {$resp_code_sql}";
+			}
 			
-			$query = "UPDATE {$app->config->sqltable->value} SET {$auth_iden_sql}, {$resp_code_sql}
+			$query = "UPDATE {$app->config->sqltable->value} SET {$sql_snippet}
 				WHERE id = {$msg->original_trans_id}";
 				
 			$sql->query($query, function($sql, $success) use($app, $msg, $query){
@@ -366,9 +414,17 @@ class Vendor extends AppInstance{
 	 * @param Vendor $app
 	 */
 	public function checkOutboundQueue($app){
+		if (Daemon::$debug) {
+			Daemon::log(__METHOD__.' running!');
+		}
 		// if there any items in the queue then send one off 
 		if (count($app->tq) > 0) {
 			// item exists in queue; check connection
+			if (Daemon::$debug) {
+				Daemon::log(__METHOD__.' '.count($app->tq).' items exist in queue. Attempting to send one!');
+				Daemon::log('About to start while() trying to get connection');
+			}
+			
 			while (!$app->vendorconn->connected) {
 				$app->connect();
 				if (Daemon::$debug) {
@@ -376,8 +432,15 @@ class Vendor extends AppInstance{
 				}
 				//sleep(10);
 			}
+			if (Daemon::$debug) {
+				Daemon::log('while() loop completed! Connected state:'.$app->vendorconn->connected);
+			}
+			// check connection state and if established send message
+			if ($app->vendorconn->connected) {
 				$msg = $app->tq->dequeue();
 				$app->vendorconn->sendData($msg->getTCPMessage());
+			}
+				
 			//$conn = $app->get
 		}
 	}
@@ -449,6 +512,7 @@ class Vendor extends AppInstance{
 							$app->tq->enqueue($app->vendorMessage);
 
 							// send the data to the remote vendor
+							Daemon::log('About to call Vendor->connect and pass in callback to checkOutboundQueue');
 							$app->connect(function($conn) use ($app){
 								$app->checkOutboundQueue($app);
 							});
