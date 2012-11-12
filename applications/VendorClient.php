@@ -29,7 +29,7 @@ class VendorClient extends NetworkClient{
 		return array(
 			// @todo add description strings
 			//'servers'				=> 'tcp://127.0.0.1,tcp://192.168.1.48',
-			'servers'				=> 'tcp://167.16.0.125',
+			'servers'				=> 'tcp://192.168.1.48,tcp://172.15.10.9',
 			'port'					=> 22825,
 			'maxconnperserv'		=> 1,
 		);
