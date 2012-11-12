@@ -138,6 +138,7 @@ class Vendor extends AppInstance{
 	public function connect() {
 		//Daemon::log(__METHOD__.' running');
 		$app = $this;
+		$url = '';
 		// check for a passed callback and execute it when the job completes
 		$args = func_get_args();
 		$callbacks = array();
@@ -145,6 +146,11 @@ class Vendor extends AppInstance{
 //			if (Daemon::$debug) {
 //				Daemon::log('connect() args:'.print_r($args, true));
 //			}
+
+			// check the first arguments to see if it a url
+			if (!is_object($args[0]) && !is_callable($args[0])) {
+				$url = array_shift($args);
+			}
 			// make sure the argument is callable
 			foreach($args as $arg) {
 				if (is_object($arg) && is_callable($arg)) {
@@ -170,37 +176,25 @@ class Vendor extends AppInstance{
 			}
 			//return true;
 		} else {
-			try {
-				if (Daemon::$debug) {
-					Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
-				}
-				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
+//			if (Daemon::$debug) {
+//				Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
+//			}
+			// if we have a url use it instead of the an auto selected default
+			if (strlen($url) > 0) {
+//				if (Daemon::$debug) {
+//					Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
+//				}
+				$app->vendorclient->getConnection( $url, function ($conn, $success) use ($app, $callbacks) {
+					if (!$success) {
+						Daemon::log('getConnection() failed!');
+					}
 					$app->vendorconn = $conn;
 					if ($conn->connected) {
 						if (Daemon::$debug) {
 							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
 						}
 
-						// add event handlers to process incoming messages and reconnect
-						// automatically when the connection disconnects
-						$conn->addEventHandler('data_recvd', function($msg) use ($conn, $app) {
-							$app->processReceivedData($msg, $conn, $app);
-
-						});
-
-						// add an event handler to reconnect when the connection ends
-						$conn->addEventHandler('disconnect', function() use ($app) {
-							$args = func_get_args();
-							Daemon::log('$args passed :'.print_r($args, true));
-							Daemon::log($conn->hostReal.':'.$conn->port.' disconnected. Attempting to reconnect');
-							$app->connect();
-						});
-
-						// add a handler for when data is sent
-						$conn->addEventHandler('data_sent', function($data_length) use ($app){
-							// this is really just for testing
-							Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
-						});
+						Vendor::attachEventHandlers($conn, $app, $msg);
 
 						// call our callback functions
 						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
@@ -212,10 +206,65 @@ class Vendor extends AppInstance{
 						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
 					}
 				});
-			}catch(Exception $e) {
-				Daemon::log('Exception caught! $e:'.$e);
-			}	
+			} else {
+				// use an auto selected value from the servers list
+				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
+					$app->vendorconn = $conn;
+					if ($conn->connected) {
+						if (Daemon::$debug) {
+							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
+						}
+
+						Vendor::attachEventHandlers($conn, $app, $msg);
+
+						// call our callback functions
+						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
+						foreach($callbacks as $cb) {
+							call_user_func($cb);
+						}
+					}
+					else {
+						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+					}
+				});
+				if (!$obj->connected) {
+					// connection failed. try other IP
+					$srv_list = explode(',',$app->vendorclient->config->servers->value);
+					Daemon::log('Servers list:'.print_r($srv_list, true));
+				}
+			}
 		}
+	}
+	
+	public static function attachEventHandlers($conn, $app, $msg) {
+		// add event handlers to process incoming messages and reconnect
+		// automatically when the connection disconnects
+		$conn->addEventHandler('data_recvd', function($msg) use ($conn, $app) {
+			$app->processReceivedData($msg, $conn, $app);
+
+		});
+
+		// add an event handler to reconnect when the connection ends
+		$conn->addEventHandler('disconnect', function($failed_ip, $failed_port) use ($app) {
+			$app->vendorconn->connected = false;
+//			$args = func_get_args();
+//			Daemon::log('$args passed :'.print_r($args, true));
+			Daemon::log($failed_ip.':'.$failed_port.' disconnected. Attempting to reconnect');
+			$srv_list = explode(',',$app->vendorclient->config->servers->value);
+			$new_ip = array_shift($srv_list);
+			if ($new_ip === $failed_ip) {
+				$new_ip = array_shift($srv_list);
+			}
+			// recall the connect function using the other IP
+			Daemon::log('About to attempt connection to: '.$new_ip.':'.$failed_port);
+			$app->connect("tcp://{$new_ip}:{$failed_port}");
+		});
+
+		// add a handler for when data is sent
+		$conn->addEventHandler('data_sent', function($data_length) use ($app){
+			// this is really just for testing
+			Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
+		});
 	}
 	
 	/**
@@ -425,6 +474,16 @@ class Vendor extends AppInstance{
 				Daemon::log('About to start while() trying to get connection');
 			}
 			
+//			// call our connect() method and pass a closure to send the data
+//			$app->connect(function($conn) use($app){
+//				if ($conn->connected) {
+//					// connection success
+//					//$app->vendor = $conn;
+//					$msg = $app->tq->dequeue();
+//					$conn->sendData($msg->getTCPMessage());
+//				}
+//			});
+			
 			while (!$app->vendorconn->connected) {
 				$app->connect();
 				if (Daemon::$debug) {
@@ -437,6 +496,7 @@ class Vendor extends AppInstance{
 			}
 			// check connection state and if established send message
 			if ($app->vendorconn->connected) {
+				Daemon::log('Attempting to send data to '.$app->vendorconn->hostReal);
 				$msg = $app->tq->dequeue();
 				$app->vendorconn->sendData($msg->getTCPMessage());
 			}
