@@ -134,29 +134,35 @@ class Vendor extends AppInstance{
 	/**
 	 * Establish a connection to the remote vendor and start a timer to send 
 	 * keepalive messages
+	 * @param String $url - a url to try to connect to
+	 * @param Closure $callbacks - any callbacks to execute
 	 */
-	public function connect() {
+	public function connect($url = null, $callbacks = null) {
 		//Daemon::log(__METHOD__.' running');
 		$app = $this;
 		// check for a passed callback and execute it when the job completes
-		$args = func_get_args();
-		$callbacks = array();
-		if (count($args) > 0) {
-//			if (Daemon::$debug) {
-//				Daemon::log('connect() args:'.print_r($args, true));
-//			}
-			// make sure the argument is callable
-			foreach($args as $arg) {
-				if (is_object($arg) && is_callable($arg)) {
-					$callbacks[] = $arg;
-					if (Daemon::$debug) {
-						Daemon::log(__METHOD__.' callback added!');
-					}
-				} else {
-					Daemon::log($arg.' is not an object and not callable');
-				}
-			}
+		if ($callbacks === null && is_object($url) && is_callable($url)) {
+			$callbacks = $url;
+			$url = null;
 		}
+//		$args = func_get_args();
+//		$callbacks = array();
+//		if (count($args) > 0) {
+////			if (Daemon::$debug) {
+////				Daemon::log('connect() args:'.print_r($args, true));
+////			}
+//			// make sure the argument is callable
+//			foreach($args as $arg) {
+//				if (is_object($arg) && is_callable($arg)) {
+//					$callbacks[] = $arg;
+//					if (Daemon::$debug) {
+//						Daemon::log(__METHOD__.' callback added!');
+//					}
+//				} else {
+//					Daemon::log($arg.' is not an object and not callable');
+//				}
+//			}
+//		}
 		if (Daemon::$debug) {
 			Daemon::log('Found '.count($callbacks).' callbacks for '.__METHOD__);
 		}
@@ -174,7 +180,7 @@ class Vendor extends AppInstance{
 				if (Daemon::$debug) {
 					Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
 				}
-				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
+				$obj = $app->vendorclient->getConnection( $url, function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
 					if ($conn->connected) {
 						if (Daemon::$debug) {
@@ -210,6 +216,16 @@ class Vendor extends AppInstance{
 					}
 					else {
 						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+						Daemon::log('Trying to connect to alternate IP');
+						$srv_list = explode(',',$app->vendorclient->config->servers->value);
+						if (in_array($conn->hostReal, $srv_list)) {
+							unset(array_search($conn->hostReal, $srv_list));
+						}
+						// try to reconnect with the remaining IP
+						$remoteIP = array_shift($srv_list);
+						$remotePort = $app->config->vendorport->value;
+						$app->connect("tcp://{$remoteIP}:{$remotePort}", $callbacks);
+						
 					}
 				});
 			}catch(Exception $e) {
