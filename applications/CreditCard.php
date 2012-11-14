@@ -18,7 +18,7 @@ class CreditCard {
 	public function __construct($card_no) {
 		$this->card_no = str_replace("-", "", str_replace(" ", "", $card_no));
 		if (strlen($this->card_no) < 14 || !is_numeric($this->card_no)) {
-			throw new Exception("Card number ($this->card_no})fails minumum checks!");
+			throw new Exception("Card number ({$this->card_no})fails minumum checks!");
 		}
 		$this->card_type = $this->CreditCardType($this->card_no);
 	}
