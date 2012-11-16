@@ -28,9 +28,8 @@ class VendorClient extends NetworkClient{
 	protected function getConfigDefaults() {
 		return array(
 			// @todo add description strings
-			//'servers'				=> 'tcp://127.0.0.1,tcp://192.168.1.48',
-			'servers'				=> 'tcp://192.168.1.48,tcp://172.15.10.9',
-			'port'					=> 22825,
+			'servers'				=> 'tcp://192.168.1.48,tcp://10.11.12.13',
+			'port'					=> 1234,
 			'maxconnperserv'		=> 1,
 		);
 	}
