@@ -107,7 +107,8 @@ class ISO8583 {
         45	=> array('an',	76,		1,	'bcd',	1,	'0'),
         46	=> array('an',	999,	1,	'',		0,	'0'),
         47	=> array('an',	999,	1,	'',		0,	'0'),
-        48	=> array('ans', 31,		1,	'bcd',	2,	'0'),
+		// bit 48 is special because it has a 2 byte BCD prefix but is a fixed length
+        48	=> array('ans', 31,		1,	'bcd',	2,	' '),
         49	=> array('bcd',	3,		0,	'',		0,	'0'),
         50	=> array('an',	3,		0,	'',		0,	'0'),
         51	=> array('a',	3,		0,	'',		0,	'0'),
@@ -470,7 +471,7 @@ class ISO8583 {
             ($data_element[0]=='z' && strlen($data)<=$data_element[1]) ||
             ($data_element[0]=='ans' && strlen($data)<=$data_element[1])) {
 
-            //fix length
+            //fixed length
             if ($data_element[2]==0) {
                 // check data length
                 if (strlen($data) > $data_element[1]) {
@@ -495,6 +496,9 @@ class ISO8583 {
 				}
                 if (strlen($prefix.$data) <= ($data_element[1]+$data_element[4])) {
                     //$result	= $prefix . sprintf("%0". strlen($data_element[1])."s", strlen($prefix.$data)). $data;
+					// This should pad the value out to the proper length
+					// an => left pad with zero
+					// ans => right pad with space
 					$result = $prefix.$data;
                 } else {
                     throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
