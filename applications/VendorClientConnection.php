@@ -118,33 +118,34 @@ class VendorClientConnection extends NetworkClientConnection {
 		// start a timer to send keep alive messages
 		Timer::setTimeout($this->keepaliveTimer);
 		
+		start: 
+			
 		// check if we have enough bytes for a packet
-		if (strlen($this->buf) >= $this->min_pkt_size) { return; }
+		if (strlen($this->buf) < $this->min_pkt_size) { return; }
 		
 		// find our packet start
 		$pkt_start = strpos($this->buf, $this->pkt_start_bytes);
-		if ($pkt_start !== false) {
-			if (Daemon::$debug) {
-				Daemon::log('Found packet start at offset: '.$pkt_start);
-			}
-			// good we found a packet, get our size
-			$ta = unpack('n', binarySubstr($this->buf, $pkt_start+strlen($this->pkt_start_bytes),$this->pkt_size_bytes));
-			$payload_size = $ta[1];
-			$pkt_size = $payload_size + $this->min_pkt_size;
-
-			// check our buffer to make sure we have the entire packet
-			if (strlen($this->buf) < $pkt_size) { return; }
-
-			// check our packet end bytes
-			$payload_end = $pkt_start + $pkt_size - (strlen($this->pkt_end_bytes));
-			if (binarySubstr($this->buf, $payload_end, strlen($this->pkt_end_bytes))){
-				// all packet checks passed. Fire event and send packet for processing
-				$pkt = binarySubstr($this->buf, $pkt_start, $pkt_size);
-				// remove this packet from the buffer
-				$this->buf = binarySubstr($this->buf, $pkt_start + strlen($pkt));
-				$this->event('data_recvd', $pkt);
-			}			
+		if ($pkt_start === false) { return; }
+		if (Daemon::$debug) {
+			Daemon::log('Found packet start at offset: '.$pkt_start);
 		}
+		// good we found a packet, get our size
+		$ta = unpack('n', binarySubstr($this->buf, $pkt_start+strlen($this->pkt_start_bytes),$this->pkt_size_bytes));
+		$payload_size = $ta[1];
+		$pkt_size = $payload_size + $this->min_pkt_size;
+
+		// check our buffer to make sure we have the entire packet
+		if (strlen($this->buf) < $pkt_size) { return; }
+
+		// check our packet end bytes
+		$payload_end = $pkt_start + $pkt_size - (strlen($this->pkt_end_bytes));
+		if (binarySubstr($this->buf, $payload_end, strlen($this->pkt_end_bytes))){
+			// all packet checks passed. Fire event and send packet for processing
+			$pkt = binarySubstr($this->buf, $pkt_start, $pkt_size);
+			// remove this packet from the buffer
+			$this->buf = binarySubstr($this->buf, $pkt_start + strlen($pkt));
+			$this->event('data_recvd', $pkt);
+		}			
 	}
 	
 	public function checkPacket(){
@@ -200,9 +201,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Write data to our connection and fire event
 	 * @param String $data - the binary string of data to send 
 	 */
-	public function sendData($data) {
-		Timer::setTimeout($this->keepaliveTimer);
-		
+	public function sendData($data) {		
 		try{
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);
