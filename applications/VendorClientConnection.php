@@ -46,7 +46,13 @@ class VendorClientConnection extends NetworkClientConnection {
 	public $pkt_size_bytes = 2;
 	
 	/**
-	 * Called when the object is ready to process data
+	 * Smallest possible packet in bytes. Add pkt_start, pkt_size, & pkt_end bytes
+	 * @var Int
+	 */
+	public $min_pkt_size = 10;
+	
+	/**
+	 * Called when the connection is comnnected and ready to process data
 	 */
 	public function onReady() {
 		// create a timer to fire keep alive messages, default timeout = 90 secs
@@ -69,8 +75,9 @@ class VendorClientConnection extends NetworkClientConnection {
 			Daemon::log(__METHOD__.' called. Connected to host:'.$this->host);
 		}
 		
+		// timeout only called in the onReady and stdin methods
 		// start the keep-alive timer 
-		Timer::setTimeout($this->keepaliveTimer);
+		//Timer::setTimeout($this->keepaliveTimer);
 		
 		parent::onConnected($cb);
 		
@@ -108,46 +115,31 @@ class VendorClientConnection extends NetworkClientConnection {
 		// apend new data to our input buffer
 		$this->buf .= $buf;
 		
-		
-		// search our buffer for packet start bytes. If found attempt to get entire packet
-		$pkt_start = 0;
-		$pkt_size = 0;
-		for ($i = 0; $i < strlen($this->buf); $i++) {
-			if (binarySubstr($this->buf, $i, strlen($this->pkt_start_bytes)) === $this->pkt_start_bytes) {
-				// we found our packet start 
+		// check if we have enough bytes for a packet
+		if (strlen($this->buf) >= $this->min_pkt_size) {
+			// we have enough bytes for a packet
+			$pkt_start = strpos($this->buf, $this->pkt_start_bytes);
+			if ($pkt_start !== false) {
 				if (Daemon::$debug) {
-					Daemon::log('Found packet start at offset: '.$i);
+					Daemon::log('Found packet start at offset: '.$pkt_start);
 				}
-				$pkt_start = $i;
-				$ta = unpack('n',substr($this->buf,strlen($this->pkt_start_bytes),$this->pkt_size_bytes));
+				// good we found a packet, get our size
+				$ta = unpack('n', binarySubstr($this->buf, $pkt_start+strlen($this->pkt_start_bytes),$this->pkt_size_bytes));
 				$payload_size = $ta[1];
-				$payload_start = $pkt_start + strlen($this->pkt_start_bytes) + $this->pkt_size_bytes;
-				$payload_end = $payload_start + $payload_size;
-				$pkt_size = strlen($this->pkt_start_bytes) + $this->pkt_size_bytes +
-						$payload_size + strlen($this->pkt_end_bytes);
+				$pkt_size = $payload_size + $this->min_pkt_size;
 				
-				// check to see if we have enough bytes for the entire message
-				if ((strlen($this->buf) - $i) >= $pkt_size) {
-					
-					// good we have enough bytes for the complete message
-					// check message end bytes
-					if (binarySubstr($this->buf, $payload_end, strlen($this->pkt_end_bytes)) 
-							== $this->pkt_end_bytes) {
-						
-						// basic message checks passed
-						// fire event and pass this message off
+				// check our buffer to make sure we have the entire packet
+				if (strlen($this->buf) >= $pkt_size) {
+					// good. enough bytes for the entire packet are present
+					// check our packet end bytes
+					if (binarySubstr($this->buf, ($pkt_start + $pkt_size - strlen($this->pkt_end_bytes)), strlen($this->pkt_end_bytes))){
+						// all packet checks passed. Fire event and send packet for processing
 						$pkt = binarySubstr($this->buf, $pkt_start, $pkt_size);
 						// remove this packet from the buffer
-						$this->buf = binarySubstr($this->buf, $i + strlen($pkt));
+						$this->buf = binarySubstr($this->buf, $pkt_start + strlen($pkt));
 						$this->event('data_recvd', $pkt);
 					}
-				} else {
-					if (Daemon::$debug) {
-						Daemon::log('Not enough bytes in buffer for entire message');
-					}
 				}
-				// break out of our for() loop looking for packet start
-				break;
 			}
 		}
 		
