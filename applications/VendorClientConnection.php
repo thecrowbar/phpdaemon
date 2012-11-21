@@ -136,7 +136,8 @@ class VendorClientConnection extends NetworkClientConnection {
 			if (strlen($this->buf) < $pkt_size) { return; }
 
 			// check our packet end bytes
-			if (binarySubstr($this->buf, ($pkt_start + $pkt_size - strlen($this->pkt_end_bytes)), strlen($this->pkt_end_bytes))){
+			$payload_end = $pkt_start + $pkt_size - (strlen($this->pkt_end_bytes));
+			if (binarySubstr($this->buf, $payload_end, strlen($this->pkt_end_bytes))){
 				// all packet checks passed. Fire event and send packet for processing
 				$pkt = binarySubstr($this->buf, $pkt_start, $pkt_size);
 				// remove this packet from the buffer
