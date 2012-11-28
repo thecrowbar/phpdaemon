@@ -70,6 +70,10 @@
 			echo "
 				</tbody>
 			</table><br />\n";
+		} else {
+			echo "<pre>\n";
+			print_r($this->job);
+			echo "</pre>\n";
 		}
 		?>
 	</div>
