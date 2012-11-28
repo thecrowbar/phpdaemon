@@ -19,7 +19,13 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Log file to record all incoming data to
 	 * @var String
 	 */
-	public $logfile = '/var/log/phpdaemon/stdin.log';
+	public $logfile_in = '/var/log/phpdaemon/stdin.log';
+	
+	/**
+	 * Log file to record all outgoing data to
+	 * @var String
+	 */
+	public $logfile_out = '/var/log/phpdaemon/stdout.log';
 	
 	/**
 	 * Timer that fires to send keep alive ISO8583 message over TCP
@@ -103,7 +109,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	public function stdin($buf) {
 		// append our data to any log file
 		if (Daemon::$debug) {
-			$file = fopen($this->logfile, 'a');
+			$file = fopen($this->logfile_in, 'a');
 			if ($file !== false) {
 				fwrite($file, $buf);
 				fwrite($file, "\n\n\n");
@@ -203,6 +209,16 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public function sendData($data) {		
 		try{
+			// append our data to any log file
+			if (Daemon::$debug) {
+				$file = fopen($this->logfile_out, 'a');
+				if ($file !== false) {
+					fwrite($file, $buf);
+					fwrite($file, "\n\n\n");
+					fclose($file);
+				}
+				Daemon::log('Received '.strlen($buf).' bytes of data. Adding to buffer. Buffer length currently:'.strlen($this->buf));
+			}
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);
 			
