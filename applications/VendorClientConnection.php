@@ -213,11 +213,11 @@ class VendorClientConnection extends NetworkClientConnection {
 			if (Daemon::$debug) {
 				$file = fopen($this->logfile_out, 'a');
 				if ($file !== false) {
-					fwrite($file, $buf);
+					fwrite($file, $data);
 					fwrite($file, "\n\n\n");
 					fclose($file);
 				}
-				Daemon::log('Received '.strlen($buf).' bytes of data. Adding to buffer. Buffer length currently:'.strlen($this->buf));
+				Daemon::log('Wrote '.strlen($data).' bytes of data.');
 			}
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);
