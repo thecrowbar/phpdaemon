@@ -21,7 +21,7 @@ class CreditCard {
 			throw new Exception("Card number ({$this->card_no})fails minumum checks!");
 		}
 		$card_type = $this->CreditCardType($this->card_no);
-		if ($card_type !== 'UNKNOWN' && luhn_check($this->card_no)) {
+		if ($card_type !== 'UNKNOWN' && $this->luhn_check($this->card_no)) {
 			$this->card_type = $card_type;
 		}
 	}
