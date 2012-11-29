@@ -50,13 +50,13 @@ class VendorRequest extends HTTPRequest{
 					return $job->setResult($name, 'Error connecting to MySQL Server');
 				}
 				
-				$query = "SELECT * FROM {$req->appInstance->config->sqltable->value}";
-				$sql->query($query, function($sql, $success) use ($job, $name) {
+				$query = $req->appInstance->config->pending_batch_query->value;
+				$sql->query($query, function($sql, $success) use ($job, $name, $query) {
 					if (!$success) {
 						if (Daemon::$debug){
 							Daemon::log('$sql->query() failed with error:'.$sql->errmsg);
 						}
-						return $job->setResult($name, 'Error with Query!');
+						return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
 					}
 					
 					// save our results in the job
@@ -64,10 +64,6 @@ class VendorRequest extends HTTPRequest{
 				});
 			}); // end of getConnection()
 			
-//			// this was for my testing of the MySQL connection			
-//			if (Daemon::$debug) {
-//				//Daemon::log(Debug::dump($tsql));
-//			}
 		});
 		
 
