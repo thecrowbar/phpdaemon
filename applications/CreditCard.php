@@ -84,6 +84,13 @@ class CreditCard {
 				$CreditCardType = "American Diners Club";
 			}
 		}
+		
+		// None of the above; check the first two digits
+		if ($CreditCardType == "UNKNOWN") {
+			if (substr($cardNo,0,2) == 65 && strlen($cardNo) == 16) {
+				$CreditCardType = "Discover";
+			}
+		}
 
 		//None of the above - So simply check the first digit
 		if ($CreditCardType == "UNKNOWN") {
