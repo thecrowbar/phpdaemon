@@ -87,7 +87,7 @@ class CreditCard {
 		
 		// None of the above; check the first two digits
 		if ($CreditCardType == "UNKNOWN") {
-			if (substr($cardNo,0,2) == 65 && strlen($cardNo) == 16) {
+			if (substr($CardNo,0,2) == 65 && strlen($CardNo) == 16) {
 				$CreditCardType = "Discover";
 			}
 		}
