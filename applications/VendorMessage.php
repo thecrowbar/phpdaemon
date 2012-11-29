@@ -8,6 +8,18 @@ class VendorMessage {
 	public $ISO8583;
 	
 	public function __construct($db_row) {
+		if (Vendor::$decrypt_data) {
+			Daemon::log('Attempting to decrypt our account number!');
+			$result = Vendor::decrypt_data($db_row[0]['pri_acct_no']);
+			if (is_array($result)) {
+				//Daemon::log('$db_row used:'.print_r($db_row[0], true));
+				// there was some sort of error
+				throw new Exception('Unable to decrypt account number! Error:'.$result['error_msg']);
+			} else {
+				$db_row[0]['pri_acct_no'] = $result;
+			}
+		}
+		//Daemon::log('DB Data to create ISO8583:'.print_r($db_row[0], true));
 		$this->ISO8583 = new ISO8583Trans($db_row);
 	}
 	/**
