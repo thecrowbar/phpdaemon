@@ -5,7 +5,8 @@ class MyAppResolver extends AppResolver {
 	public $appDir;
 	public $appPreload = array(); // [appName1 => numberOfInstances1], ...
 	public $appPreloadPrivileged = array();
-	public $htdocs_root = '/var/www/';
+	//public $htdocs_root = '/var/www/';
+	public $htdocs_root = '/opt/phpdaemon/static';
 	public $default_document = 'index.html';
 
 	/**
@@ -32,7 +33,8 @@ class MyAppResolver extends AppResolver {
 		$rpath = str_replace('../','/',$rpath);
 		$rpath = str_replace('/..','/',$rpath);
 			
-		$path = $this->htdocs_root.$host.'/'.$rpath;
+		//$path = $this->htdocs_root.$host.'/'.$rpath;
+		$path = $this->htdocs_root.'/'.$rpath;
 		//$path = '/opt/phpdaemon/'.$rpath;
 			
 		if ($host === 'wakephp.ipq.co')	{
