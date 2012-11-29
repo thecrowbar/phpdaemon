@@ -54,7 +54,7 @@ class ComplexJob {
 		if (isset($this->jobs[$name])) {
 			return false;
 		}
-		$this->jobs[$name] = $cb;
+		$this->jobs[$name] = CallbackWrapper::wrap($cb);
 		++$this->jobsNum;
 		if (($this->state === self::STATE_RUNNING) || ($this->state === self::STATE_DONE)) {
 			call_user_func($cb, $name, $this);
@@ -70,10 +70,10 @@ class ComplexJob {
 	
 	public function addListener($cb) {
 		if ($this->state === self::STATE_DONE) {
-			call_user_func($cb, $name, $this);
+			call_user_func($cb, $this);
 			return;
 		}
-		$this->listeners[] = $cb;
+		$this->listeners[] = CallbackWrapper::wrap($cb);
 	}
 
 	public function execute() {
@@ -93,5 +93,4 @@ class ComplexJob {
 		}
 		$this->addJob($name, $cb);
 	}
-	
 }

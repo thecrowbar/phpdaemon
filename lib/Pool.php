@@ -9,7 +9,7 @@
  */
 class Pool extends AppInstance {
 	public $pool;
-	
+
 	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
@@ -31,6 +31,20 @@ class Pool extends AppInstance {
 				return;
 			}
 			$this->pool = call_user_func(array($class, 'getInstance'), $name);
+			$this->pool->appInstance = $this;
+		}
+	}
+
+	/**
+	 * Function handles incoming Remote Procedure Calls
+	 * You can override it
+	 * @param string Method name.
+	 * @param array Arguments.
+	 * @return mixed Result
+	 */
+	public function RPCall($method, $args) {
+		if (is_callable($f = array($this->pool, 'RPCall'))) {
+			return call_user_func($f, $method, $args);
 		}
 	}
 

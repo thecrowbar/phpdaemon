@@ -39,7 +39,6 @@ class MongoClient extends NetworkClient {
 			'servers' => 'mongo://127.0.0.1',
 			// default port
 			'port'    => 27017,
-			
 			'maxconnperserv' => 32,
 		);
 	}
@@ -87,30 +86,26 @@ class MongoClient extends NetworkClient {
 	 * @throws MongoClientConnectionFinished
 	 */
 	public function request($key, $opcode, $data, $reply = false) {
+		$reqId = ++$this->lastReqId;
+		$cb = function ($conn) use ($opcode, $data, $reply, $reqId) {
+			if (!$conn->connected) {
+				throw new MongoClientConnectionFinished;
+			}
+			$conn->pool->lastRequestConnection = $conn;
+			$conn->write(pack('VVVV', strlen($data) + 16, $reqId, 0, $opcode) . $data);
+			if ($reply) {
+				$conn->setFree(false);
+			}
+		};
 		if (
 			(is_object($key) 
 			&& ($key instanceof MongoClientConnection))
 		) {
-			$conn = $key;
-			if ($conn->finished) {
-				throw new MongoClientConnectionFinished;
-			}
+			$cb($key);
 		} else {
-			$conn = $this->getConnectionByKey($key);
-			if (!$conn || $conn->finished) {
-				throw new MongoClientConnectionFinished;
-			}
+			$this->getConnectionByKey($key, $cb);
 		}
-
-		$this->lastRequestConnection = $conn;
-
-		$conn->write($p = pack('VVVV', strlen($data)+16, ++$this->lastReqId, 0, $opcode) . $data);
-		
-		if ($reply) {
-			$conn->setFree(false);
-		}
-		
-		return $this->lastReqId;
+		return $reqId;
 	}
 
 	/**
@@ -729,7 +724,7 @@ class MongoClient extends NetworkClient {
 	 * @param string Collection's name
 	 * @param array Data
 	 * @param string Optional. Distribution key.
-	 * @return void
+	 * @return mixed
 	 */
 	public function insert($col, $doc = array(), $cb = NULL,  $key = '') {
 		if (strpos($col, '.') === false) {
@@ -772,7 +767,7 @@ class MongoClient extends NetworkClient {
 	 * @param string Collection's name
 	 * @param array Array of docs
 	 * @param string Optional. Distribution key.
-	 * @return void
+	 * @return array
 	 */
 	public function insertMulti($col, $docs = array(), $cb = NULL, $key = '') {
 		if (strpos($col, '.') === false) {
@@ -859,13 +854,16 @@ class MongoClient extends NetworkClient {
 	/**
 	 * Returns an object of collection
 	 * @param string Collection's name
-	 * @return object MongoClientCollection
+	 * @return MongoClientCollection
 	 */
 	public function getCollection($col) {
 		if (strpos($col, '.') === false) {
 			$col = $this->dbname . '.' . $col;
-		}
-		
+		} else {
+            $collName = explode('.', $col);
+            $this->dbname = $collName[0];
+        }
+
 		if (isset($this->collections[$col])) {
 			return $this->collections[$col];
 		}
@@ -876,12 +874,10 @@ class MongoClient extends NetworkClient {
 	/**
 	 * Magic getter-method. Proxy for getCollection. 
 	 * @param string Collection's name
-	 * @return void
+	 * @return MongoClientCollection
 	 */
 	public function __get($name) {
 		return $this->getCollection($name);
 	}
 }
 class MongoClientConnectionFinished extends Exception {}
-
-

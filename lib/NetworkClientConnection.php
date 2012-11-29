@@ -18,9 +18,8 @@ class NetworkClientConnection extends Connection {
 	public function __construct($fd, $pool = null) {
 		parent::__construct($fd, $pool);
 		$this->onResponse = new StackCallbacks;
-	}	
+	}
 
-	
 	public function setFree($isFree = true) {
 		$this->busy = !$isFree;
 		if ($this->busy) {
@@ -31,19 +30,28 @@ class NetworkClientConnection extends Connection {
 		}
 	}
 
+	public function release() {
+		if ($this->pool && !$this->busy) {
+			$this->pool->touchPending($this->url);
+		}
+	}
+
 	public function checkFree() {
 		$this->setFree(!$this->finished && $this->onResponse && $this->onResponse->isEmpty());
 	}
+
 	/**
-	 * Called when session finishes
+	 * Called when connection finishes
 	 * @return void
 	 */
 	public function onFinish() {
-		parent::onFinish();
+		$this->onResponse->executeAll($this, false);
 		unset($this->onResponse);
-		$this->pool->servConnFree[$this->url]->detach($this);
-		$this->pool->servConn[$this->url]->detach($this);
-		$this->checkFree();
+		if ($this->pool && ($this->url !== null)) {
+			$this->pool->servConnFree[$this->url]->detach($this);
+			$this->pool->servConn[$this->url]->detach($this);
+		}
+		parent::onFinish();
 	}
 
 }

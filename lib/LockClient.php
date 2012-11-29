@@ -35,14 +35,13 @@ class LockClient extends NetworkClient {
 	 */
 	public function job($name, $wait, $onRun, $onSuccess = NULL, $onFailure = NULL) {
 		$name = $this->prefix . $name;
-		$conn = $this->getConnectionByName($name);
-
-		if (!$conn) {
-			return;
-		}
-
-		$this->jobs[$name] = array($onRun, $onSuccess, $onFailure);
-		$conn->writeln('acquire' . ($wait ? 'Wait' : '') . ' ' . $name);
+		$this->getConnectionByName($name, function ($conn) use ($name, $wait, $onRun, $onSuccess, $onFailure) {
+			if (!$conn->connected) {
+				return;
+			}
+			$conn->pool->jobs[$name] = array($onRun, $onSuccess, $onFailure);
+			$conn->writeln('acquire' . ($wait ? 'Wait' : '') . ' ' . $name);
+		});
 	}
 
 	/**
@@ -51,13 +50,12 @@ class LockClient extends NetworkClient {
 	 * @return void
 	 */
 	public function done($name) {
-		$conn = $this->getConnectionByName($name);
-
-		if (!$conn) {
-			return;
-		}
-
-		$conn->writeln('done ' . $name);
+		$this->getConnectionByName($name, function ($conn) use ($name) {
+			if (!$conn->connected) {
+				return;
+			}
+			$conn->writeln('done ' . $name);
+		});
 	}
 
 	/**
@@ -66,21 +64,21 @@ class LockClient extends NetworkClient {
 	 * @return void
 	 */
 	public function failed($name) {
-		$conn = $this->getConnectionByName($name);
-
-		if (!$conn) {
-			return;
-		}
-
-		$conn->writeln('failed ' . $name);
+		$this->getConnectionByName($name, function ($conn) use ($name) {
+			if (!$conn->connected) {
+				return;
+			}
+			$conn->writeln('failed ' . $name);
+		});
 	}
 
 	/**
 	 * Returns available connection from the pool by name
 	 * @param string Key
-	 * @return object MemcacheSession
+	 * @param callback Callback
+	 * @return boolean Success.
 	 */
-	public function getConnectionByName($name) {
+	public function getConnectionByName($name, $cb) {
 		if (
 			($this->dtags_enabled) 
 			&& (($sp = strpos($name, '[')) !== FALSE) 
@@ -94,7 +92,7 @@ class LockClient extends NetworkClient {
 		$addr = array_rand($this->servers);
 		srand();  
 
-		return $this->getConnection($addr);
+		return $this->getConnection($addr, $cb);
 	}
 }
 

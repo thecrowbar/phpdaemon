@@ -39,7 +39,6 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	public $instate       = 0;         // State of pointer of incoming data. 0 - Result Set Header Packet,  1 - Field Packet,  2 - Row Packet
 	public $resultRows    = array();   // Resulting rows.
 	public $resultFields  = array();   // Resulting fields
-	public $callbacks     = array();   // Stack of callbacks.
 	public $onConnected   = array();   // Callback. Called when connection's handshaked.
 	public $context;                   // Property holds a reference to user's object.
 	public $insertId;                  // Equals with INSERT_ID().
@@ -83,13 +82,13 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	 */
 	public function onConnected($cb) {
 		if ($this->state == self::STATE_AUTH_ERROR) {
-			call_user_func($callback, $this, false);
+			call_user_func($cb, $this, false);
 		}
 		elseif ($this->state === self::STATE_AUTH_OK) {
-			call_user_func($callback, $this, true);
+			call_user_func($cb, $this, true);
 		} else {
 			if (!$this->onConnected) {
-				$this->onConnected = new SplStackCallbacks;
+				$this->onConnected = new StackCallbacks;
 			}
 			$this->onConnected->push($cb);
 		}
@@ -277,16 +276,16 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	 * @param callback Optional. Callback called when response received.
 	 * @return boolean Success
 	 */
-	public function sync($callback = NULL) {
-		return $this->command('S', '', $callback);
+	public function sync($cb = NULL) {
+		return $this->command('S', '', $cb);
 	}
 
 	/**
 	 * Send terminate-request to shutdown the connection
 	 * @return boolean Success
 	 */
-	public function terminate() {
-		return $this->command('X', '', $callback);
+	public function terminate($cb = NULL) {
+		return $this->command('X', '', $cb);
 	}
 
 	/**
@@ -296,12 +295,12 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	 * @param callback Optional. Callback called when response received.
 	 * @return boolean Success
 	 */
-	public function command($cmd, $q = '', $callback = NULL) {
+	public function command($cmd, $q = '', $cb = NULL) {
 		if ($this->state !== self::STATE_AUTH_OK) {
 			return FALSE;
 		}
 		
-		$this->callbacks[] = $callback;
+		$this->onResponse->push($cb);
 		$this->sendPacket($cmd, $q);
 		
 		return TRUE;
@@ -602,15 +601,7 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	 */
 	public function onResultDone() {
 		$this->instate = 0;
-		$callback = array_shift($this->callbacks);
-
-		if (
-			$callback 
-			&& is_callable($callback)
-		) {
-			call_user_func($callback, $this, TRUE);
-		}
-		
+		$this->onResponse->executeOne($this, true);
 		$this->resultRows = array();
 		$this->resultFields = array();
 		
@@ -625,15 +616,7 @@ class PostgreSQLClientConnection extends NetworkClientConnection {
 	 */
 	public function onError() {
 		$this->instate = 0;
-		$callback = array_shift($this->callbacks);
-
-		if (
-			$callback 
-			&& is_callable($callback)
-		) {
-			call_user_func($callback, $this, FALSE);
-		}
-		
+		$this->onResponse->executeOne($this, false);
 		$this->resultRows = array();
 		$this->resultFields = array();
 

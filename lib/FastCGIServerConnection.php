@@ -62,10 +62,11 @@ class FastCGIServerConnection extends Connection {
 	 * @return void
 	 */
 	
-	public function onRead() {
+	public function stdin($buf) {
+		$this->buf .= $buf;
 		start:
 		if ($this->state === self::STATE_ROOT) {
-			$header = $this->read(8);
+			$header = $this->readFromBufExact(8);
 
 			if ($header === false) {
 				return;
@@ -74,7 +75,7 @@ class FastCGIServerConnection extends Connection {
 			$this->header = unpack('Cver/Ctype/nreqid/nconlen/Cpadlen/Creserved', $header);
 
 			if ($this->header['conlen'] > 0) {
-				$this->setWatermark($this->header['conlen'], $this->header['conlen']);
+				$this->setWatermark($this->header['conlen']);
 			}
 			$type = $this->header['type'];
 			$this->header['ttype'] = isset(self::$requestTypes[$type]) ? self::$requestTypes[$type] : $type;
@@ -86,7 +87,7 @@ class FastCGIServerConnection extends Connection {
 			$rid = $this->header['reqid'];
 		}
 		if ($this->state === self::STATE_CONTENT) {
-			$this->content = ($this->header['conlen'] === 0) ? '' : $this->read($this->header['conlen']);
+			$this->content = $this->readFromBufExact($this->header['conlen']);
 
 			if ($this->content === false) {
 				$this->setWatermark($this->header['conlen']);
@@ -101,7 +102,7 @@ class FastCGIServerConnection extends Connection {
 		}
 
 		if ($this->state === self::STATE_PADDING) {
-			$pad = ($this->header['padlen'] === 0) ? '' : $this->read($this->header['padlen']);
+			$pad = $this->readFromBufExact($this->header['padlen']);
 
 			if ($pad === false) {
 				return;
@@ -111,9 +112,9 @@ class FastCGIServerConnection extends Connection {
 		$this->state = self::STATE_ROOT;
 
 		
-		/*	Daemon::log('[DEBUG] FastCGI-record #' . $this->header['type'] . ' (' . $this->header['ttype'] . '). Request ID: ' . $rid 
+		if (0) Daemon::log('[DEBUG] FastCGI-record ' . $this->header['ttype'] . '). Request ID: ' . $rid 
 				. '. Content length: ' . $this->header['conlen'] . ' (' . strlen($this->content) . ') Padding length: ' . $this->header['padlen'] 
-				. ' (' . strlen($pad) . ')');*/
+				. ' (' . strlen($pad) . ')');
 		
 
 		if ($type == self::FCGI_BEGIN_REQUEST) {
@@ -129,7 +130,6 @@ class FastCGIServerConnection extends Connection {
 			$req->attrs->server      = array();
 			$req->attrs->files       = array();
 			$req->attrs->session     = null;
-			$req->attrs->connId      = $this->id;
 			$req->attrs->role       = self::$roles[$u['role']];
 			$req->attrs->flags       = $u['flags'];
 			$req->attrs->id          = $this->header['reqid'];
@@ -146,7 +146,7 @@ class FastCGIServerConnection extends Connection {
 		elseif (isset($this->requests[$rid])) {
 			$req = $this->requests[$rid];
 		} else {
-			Daemon::log('Unexpected FastCGI-record #' . $r['type'] . ' (' . $r['ttype'] . '). Request ID: ' . $rid . '.');
+			Daemon::log('Unexpected FastCGI-record #' . $this->header['type'] . ' (' . $this->header['ttype'] . '). Request ID: ' . $rid . '.');
 			return;
 		}
 
@@ -196,7 +196,7 @@ class FastCGIServerConnection extends Connection {
 					if (($namelen = ord($this->content{$p})) < 128) {
 						++$p;
 					} else {
-						$u = unpack('Nlen', chr(ord($c{$p}) & 0x7f) . binarySubstr($this->content, $p + 1, 3));
+						$u = unpack('Nlen', chr(ord($this->content{$p}) & 0x7f) . binarySubstr($this->content, $p + 1, 3));
 						$namelen = $u['len'];
 						$p += 4;
 					}

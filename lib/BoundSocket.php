@@ -80,11 +80,10 @@ abstract class BoundSocket {
 		if ($this->pid != posix_getpid()) {
 			return;
 		}
-		if (Daemon::$useSockets) {
-			socket_close($this->fd);
-		} else {
-			fclose($this->fd);
+		if ($this->fd === null) {
+			return;
 		}
+		socket_close($this->fd);
 	}
 
 
@@ -109,7 +108,7 @@ abstract class BoundSocket {
 	 */
 	public function onAcceptEvent($stream = null, $events = 0, $arg = null) {
 		if (Daemon::$config->logevents->value) {
-			Daemon::$process->log(get_class($this) . '::' . __METHOD__ . '(' . $sockId . ') invoked.');
+			Daemon::$process->log(get_class($this) . '::' . __METHOD__ . ' invoked.');
 		}
 		
 		if (Daemon::$process->reload) {
@@ -121,25 +120,11 @@ abstract class BoundSocket {
 				return;
 			}
 		}
-		
-		if (Daemon::$useSockets) {
-			$fd = @socket_accept($stream);
-
-			if (!$fd) {
-				return;
-			}
-			
-			socket_set_nonblock($fd);
-		} else {
-			$fd = @stream_socket_accept($stream, 0, $addr);
-
-			if (!$fd) {
-				return;
-			}
-			
-			stream_set_blocking($fd, 0);
+		$fd = @socket_accept($stream);
+		if (!$fd) {
+			return;
 		}
-		
+		socket_set_nonblock($fd);	
 		$class = $this->pool->connectionClass;
  		return new $class($fd, $this->pool);
 	}

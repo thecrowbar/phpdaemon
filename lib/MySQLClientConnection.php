@@ -104,18 +104,6 @@ class MySQLClientConnection extends NetworkClientConnection {
 	}
 
 	/**
-	 * Returns packet's header
-	 * @return array [length, seq]
-	 */
-	private function getPacketHeader() {
-		if ($this->buflen < 4) {
-			return FALSE;
-		}
-		
-		return array($this->bytes2int(binarySubstr($this->buf, 0, 3)), ord(binarySubstr($this->buf, 3, 1)));
-	}
-
-	/**
 	 * Sends a packet
 	 * @param string Data
 	 * @return boolean Success
@@ -336,9 +324,11 @@ class MySQLClientConnection extends NetworkClientConnection {
 		
 		$this->buflen = strlen($this->buf);
 		
-		if (($packet = $this->getPacketHeader()) === FALSE) {
+		if ($this->buflen < 4) {
 			return;
 		}
+		
+		$packet = array($this->bytes2int(binarySubstr($this->buf, 0, 3)), ord(binarySubstr($this->buf, 3, 1)));
 		$this->seq = $packet[1] + 1;
 		if ($this->buflen < 4 + $packet[0]) {
 			// not whole packet yet
@@ -509,11 +499,7 @@ class MySQLClientConnection extends NetworkClientConnection {
 	 */
 	public function onResultDone() {
 		$this->instate = self::INSTATE_HEADER;
-		$callback = $this->onResponse->isEmpty() ? null : $this->onResponse->shift();
-
-		if ($callback && is_callable($callback)) {
-			call_user_func($callback, $this, TRUE);
-		}
+		$this->onResponse->executeOne($this, true);
 		$this->checkFree();
 		$this->resultRows = array();
 		$this->resultFields = array();
@@ -525,13 +511,7 @@ class MySQLClientConnection extends NetworkClientConnection {
 	 */
 	public function onError() {
 		$this->instate = self::INSTATE_HEADER;
-		$callback = $this->onResponse->count() ? $this->onResponse->shift() : null;
-		if (
-			$callback 
-			&& is_callable($callback)
-		) {
-			call_user_func($callback, $this, FALSE);
-		}
+		$this->onResponse->executeOne($this, false);
 		$this->checkFree();
 		$this->resultRows = array();
 		$this->resultFields = array();

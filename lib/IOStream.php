@@ -18,10 +18,8 @@ abstract class IOStream {
 	public $finished = false;
 	public $ready = false;
 	public $readLocked = false;
-	public $addr;
-	private $sending = true;
-	private $reading = false;
-	public $connected = false;
+	public $sending = true;
+	public $reading = false;
 	public $directInput = false; // do not use prebuffering of incoming data
 	public $directOutput = false; // do not use prebuffering of outgoing data
 	public $event;
@@ -35,6 +33,7 @@ abstract class IOStream {
 	public $timeout = null;
 	public $url;
 	public $alive = false; // alive?
+	public $pool;
 
 	/**
 	 * IOStream constructor
@@ -52,11 +51,8 @@ abstract class IOStream {
 			$this->setFd($fd);
 		}
 
-		$this->onWriteOnce = new SplStack();
+		$this->onWriteOnce = new SplStack;
 		
-	}
-	
-	public function onInheritanceFromRequest($req) {
 	}
 	
 	/**
@@ -129,6 +125,15 @@ abstract class IOStream {
 		}
 	}
 
+	public function setTimeout($timeout) {
+		$this->timeout = $timeout;
+		if ($this->timeout !== null) {
+			if ($this->buffer) {
+				event_buffer_timeout_set($this->buffer, $this->timeout, $this->timeout);
+			}
+		}
+	}
+
 	public function onDirectEvent($fd, $events, $arg) {
 		if (($events | EV_READ) === $events) {
 			$this->onReadEvent($fd);
@@ -186,6 +191,19 @@ abstract class IOStream {
 		$this->buf = binarySubstr($this->buf, $p + $sEOL);
 
 		return $r;
+	}
+
+	public function readFromBufExact($n) {
+		if ($n === 0) {
+			return '';
+		}
+		if (strlen($this->buf) < $n) {
+			return false;
+		} else {
+			$r = binarySubstr($this->buf, 0, $n);
+			$this->buf = binarySubstr($this->buf, $n);
+			return $r;
+		}
 	}
 
 	/**
@@ -319,16 +337,15 @@ abstract class IOStream {
 	 * @return void
 	 */
 	public function close() {
-		if (!isset($this->buffer)) {
-			return;
-		}
 		if (isset($this->event)) {
 			event_del($this->event);
 			event_free($this->event);
 			$this->event = null;
 		}
-		event_buffer_free($this->buffer);
-		$this->buffer = null;
+		if (isset($this->buffer)) {
+			event_buffer_free($this->buffer);
+			$this->buffer = null;
+		}
 		if (isset($this->fd)) {
 			$this->closeFd();
 		}
@@ -349,10 +366,14 @@ abstract class IOStream {
 		if ($this->readLocked) {
 			return;
 		}
-		if (isset($this->onRead)) {
-			$this->reading = !call_user_func($this->onRead);
-		} else {
-			$this->reading = !$this->onRead();
+		try {
+			if (isset($this->onRead)) {
+				$this->reading = !call_user_func($this->onRead);
+			} else {
+				$this->reading = !$this->onRead();
+			}
+		} catch (Exception $e) {
+			Daemon::uncaughtExceptionHandler($e);
 		}
 	}
 	
@@ -395,23 +416,35 @@ abstract class IOStream {
 		if (!$this->ready) {
 			$this->ready = true;
 			while (!$this->onWriteOnce->isEmpty()) {
-				call_user_func($this->onWriteOnce->pop(), $this);
+				try {
+					call_user_func($this->onWriteOnce->pop(), $this);
+				} catch (Exception $e) {
+					Daemon::uncaughtExceptionHandler($e);
+				}
 				if (!$this->ready) {
 					return;
 				}
 			}
 			$this->alive = true;
 			event_buffer_enable($this->buffer, $this->directInput ? (EV_WRITE | EV_TIMEOUT | EV_PERSIST) : (EV_READ | EV_WRITE | EV_TIMEOUT | EV_PERSIST));
-			$this->onReady();
+			try {			
+				$this->onReady();
+			} catch (Exception $e) {
+				Daemon::uncaughtExceptionHandler($e);
+			}
 		} else {
 			while (!$this->onWriteOnce->isEmpty()) {
 				call_user_func($this->onWriteOnce->pop(), $this);
 			}
 		}
-		if (isset($this->onWrite)) {
-			call_user_func($this->onWrite, $this);
-		} else {
-			$this->onWrite();
+		try {
+			if (isset($this->onWrite)) {
+				call_user_func($this->onWrite, $this);
+			} else {
+				$this->onWrite();
+			}
+		} catch (Exception $e) {
+			Daemon::uncaughtExceptionHandler($e);
 		}
 	}
 	
@@ -422,16 +455,19 @@ abstract class IOStream {
 	 * @return void
 	 */
 	public function onFailureEvent($stream, $arg = null) {
-		$this->close();
-		if ($this->finished) {
-			return;
+		try {
+			$this->close();
+			if ($this->finished) {
+				return;
+			}
+			$this->finished = true;
+			$this->onFinish();
+			if ($this->pool) {
+				$this->pool->detach($this);
+			}
+		} catch (Exception $e) {
+			Daemon::uncaughtExceptionHandler($e);
 		}
-		$this->finished = true;
-		$this->onFinish();
-		if ($this->pool) {
-			$this->pool->detach($this);
-		}
-		
 		event_base_loopexit(Daemon::$process->eventBase);
 	}
 	
