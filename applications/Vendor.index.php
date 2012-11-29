@@ -59,7 +59,7 @@
 				if ($row_count % 2) {
 					$add_class = ' even ';
 				}
-				echo "<tr class='pending_trans {$add_class}' trans_id='{$trans[$i]['id']}' title='test_num: {$trans[$i]['test_num']}'>";
+				echo "<tr class='pending_trans {$add_class}' trans_id='{$trans[$i]['id']}' >";
 				foreach($columns as $col) {
 					echo "\t\t\t\t\t\t<td col_name='{$col}'>{$trans[$i][$col]}</td>\n";
 				}
