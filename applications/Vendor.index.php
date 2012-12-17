@@ -40,36 +40,41 @@
 		<h2>phpdaemon Example</h2>
 		<?php
 		if (is_array($this->job->getResult('pending_trans'))) {
-			$trans = $this->job->getResult('pending_trans');
-			// we have pending transactions to display
-			// get the first five column names from the array
-			$columns = array_keys($trans[0]);
-			echo "<table class='border1' id='pending_trans'>
-				<thead>
-					<tr>";
-			foreach($columns as $column) {
-				echo "\t\t\t\t\t\t<th>{$column}</th>\n";
-			}
-			echo "					</tr>
-				</thead>
-				<tbody>\n";
-			$row_count = 0;
-			for ($i =0; $i < count($trans); $i++) {
-				$add_class = ' odd ';
-				if ($row_count % 2) {
-					$add_class = ' even ';
+			if (count($this->job->getResult('pending_trans')) > 0 ) {
+				$trans = $this->job->getResult('pending_trans');
+				// we have pending transactions to display
+				// get the first five column names from the array
+				$columns = array_keys($trans[0]);
+				echo "<table class='border1' id='pending_trans'>
+					<thead>
+						<tr>";
+				foreach($columns as $column) {
+					echo "\t\t\t\t\t\t<th>{$column}</th>\n";
 				}
-				echo "<tr class='pending_trans {$add_class}' trans_id='{$trans[$i]['id']}' >";
-				foreach($columns as $col) {
-					echo "\t\t\t\t\t\t<td col_name='{$col}'>{$trans[$i][$col]}</td>\n";
+				echo "					</tr>
+					</thead>
+					<tbody>\n";
+				$row_count = 0;
+				for ($i =0; $i < count($trans); $i++) {
+					$add_class = ' odd ';
+					if ($row_count % 2) {
+						$add_class = ' even ';
+					}
+					echo "<tr class='pending_trans {$add_class}' trans_id='{$trans[$i]['id']}' >";
+					foreach($columns as $col) {
+						echo "\t\t\t\t\t\t<td col_name='{$col}'>{$trans[$i][$col]}</td>\n";
+					}
+					echo "
+						</tr>\n";
+					$row_count++;
 				}
 				echo "
-					</tr>\n";
-				$row_count++;
+					</tbody>
+				</table><br />\n";
+			} else {
+				echo "<h4>No pending transactions!</h4>\n";
 			}
-			echo "
-				</tbody>
-			</table><br />\n";
+				
 		} else {
 			echo "<pre>\n";
 			print_r($this->job);
@@ -77,12 +82,15 @@
 		}
 		?>
 	</div>
-	<h4>This section just for testing. Remove for production code.</h4>
-	<button onclick="create();">Create WebSocket</button>
-	<button onclick="ws.send('ping');">Send ping</button>
-	<button onclick="ws.close();">Close WebSocket</button>
-	<div id="log" style="width:600px; height: 100px; border: 1px solid #999999; overflow:auto;"></div><br />
-	<button onclick="ws.send('command');">Send Command</button><button onclick="sendObject({command:'send_trans',trans_id:'1234'});">Send Object</button><br />
-	<button onclick="sendText();">Send Text</button><input type="text" name="command" id="command" />
+	<div>
+		<h4>This section just for testing. Remove for production code.</h4>
+		<button onclick="create();">Create WebSocket</button>
+		<button onclick="ws.send('ping');">Send ping</button>
+		<button onclick="ws.close();">Close WebSocket</button>
+		<div id="log" style="width:600px; height: 100px; border: 1px solid #999999; overflow:auto;"></div><br />
+		<button onclick="ws.send('command');">Send Command</button><button onclick="sendObject({command:'send_trans',trans_id:'1234'});">Send Object</button><br />
+		<button onclick="sendText();">Send Text</button><input type="text" name="command" id="command" />
+	</div>
+	<div><pre><?php print_r($req->attrs); ?></pre></div>
 </body>
 </html>
