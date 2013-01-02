@@ -1,17 +1,18 @@
 <?php
 
 /**
- * BoundTCPSocket
+ * BoundUDPSocket
  *
  * @package Core
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
-class BoundTCPSocket extends BoundSocket {
+class BoundUDPSocket extends BoundSocket {
 	public $defaultPort = 0;
 	public $reuse = true;
 	public $host;
 	public $port;
+	public $portsMap = array();
 
 	public function setDefaultPort($n) {
 		$this->defaultPort = (int) $n;
@@ -31,10 +32,10 @@ class BoundTCPSocket extends BoundSocket {
 		$host = $hp[0];
 		$port = (int) $hp[1];
 		$addr = $host . ':' . $port;
-		$sock = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
+		$sock = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
 		if (!$sock) {
 			$errno = socket_last_error();
-			Daemon::$process->log(get_class($this) . ': Couldn\'t create TCP-socket (' . $errno . ' - ' . socket_strerror($errno) . ').');
+			Daemon::$process->log(get_class($this) . ': Couldn\'t create UDP-socket (' . $errno . ' - ' . socket_strerror($errno) . ').');
 			return false;
 		}
 		if ($this->reuse) {
@@ -56,11 +57,6 @@ class BoundTCPSocket extends BoundSocket {
 		}
 		socket_getsockname($sock, $this->host, $this->port);
 		$addr = $this->host . ':' . $this->port;
-		if (!socket_listen($sock, SOMAXCONN)) {
-			$errno = socket_last_error();
-			Daemon::$process->log(get_class($this) . ': Couldn\'t listen TCP-socket \'' . $addr . '\' (' . $errno . ' - ' . socket_strerror($errno) . ')');
-			return false;
-			}
 		socket_set_nonblock($sock);
 		$this->setFd($sock);
 		return true;
@@ -68,42 +64,64 @@ class BoundTCPSocket extends BoundSocket {
 
 
 	/**
-	 * Called when new connections is waiting for accept
+	 * Called when we got UDP packet
 	 * @param resource Descriptor
 	 * @param integer Events
 	 * @param mixed Attached variable
 	 * @return boolean Success.
 	 */
 	public function onAcceptEvent($stream = null, $events = 0, $arg = null) {
-		$conn = $this->accept();
-		if (!$conn) {
+		if (Daemon::$config->logevents->value) {
+			Daemon::$process->log(get_class($this) . '::' . __METHOD__ . ' invoked.');
+		}
+		
+		if (Daemon::$process->reload) {
 			return false;
 		}
-		$socket = $this;
-		$getpeername = function($conn) use (&$getpeername, $socket) { 
-			$r = @socket_getpeername($conn->fd, $host, $port);
-			if ($r === false) {
-   				if (109 === socket_last_error()) { // interrupt
-   					if ($conn->allowedClients !== null) {
-   						$conn->ready = false; // lockwait
-   					}
-   					$conn->onWriteOnce($getpeername);
-   					return;
-   				}
-   			}
-			$conn->addr = $host.':'.$port;
-			$conn->host = $host;
-			$conn->port = $port;
-			$conn->parentSocket = $socket;
-			if ($conn->pool->allowedClients !== null) {
-				if (!BoundTCPSocket::netMatch($conn->pool->allowedClients, $host)) {
-					Daemon::log('Connection is not allowed (' . $host . ')');
-					$conn->ready = false;
-					$conn->finish();
+
+		if ($this->pool->maxConcurrency) {
+			if ($this->pool->count() >= $this->pool->maxConcurrency) {
+				$this->overload = true;
+				return false;
+			}
+		}
+
+		$host = null;
+		do {
+			$l = @socket_recvfrom($this->fd, $buf, 10240, MSG_DONTWAIT, $host, $port);
+			if ($l) {
+				$key = '['.$host . ']:' . $port;
+				if (!isset($this->portsMap[$key])) {
+
+					if ($this->pool->allowedClients !== null) {
+						if (!self::netMatch($conn->pool->allowedClients, $host)) {
+							Daemon::log('Connection is not allowed (' . $host . ')');
+						}
+						continue;
+					}
+
+					$class = $this->pool->connectionClass;
+ 					$conn = new $class(null, $this->pool);
+ 					$conn->dgram = true;
+ 					$conn->onWriteEvent();
+ 					$conn->host = $host;
+ 					$conn->port = $port;
+ 					$conn->addr = $key;
+ 					$conn->parentSocket = $this;
+ 					$this->portsMap[$key] = $conn;
+ 					$conn->timeoutRef = setTimeout(function($timer) use ($conn) {
+ 						$conn->finish();
+ 						$timer->finish();
+ 					}, $conn->timeout * 1e6);
+ 					 $conn->stdin($buf);
+				} else {
+					$conn = $this->portsMap[$key];
+					$conn->stdin($buf);
+					Timer::setTimeout($conn->timeoutRef);
 				}
 			}
-		};
-		$getpeername($conn);
-		return $conn;
+		} while ($l);
+
+		return $host !== null;
 	}
 }

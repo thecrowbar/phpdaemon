@@ -41,19 +41,22 @@ class ConnectionPool extends ObjectStorage {
 	*/
 	public function onReady() {
 		$this->enable();
-	}
-	
+	}	
 	
 	/**
 	 * Called when worker is going to update configuration.
 	 * @return void
 	 */
 	public function onConfigUpdated() {
+		if (Daemon::$process instanceof Daemon_WorkerProcess) {
+			if ($this->config === null) {
+				$this->disable();
+			} else {
+				$this->enable();
+			}
+		}
 		if ($defaults = $this->getConfigDefaults()) {
 			$this->processDefaultConfig($defaults);
-		}
-		if ($this->config === null) {
-			return;
 		}
 		$this->applyConfig();
 	}
@@ -156,8 +159,13 @@ class ConnectionPool extends ObjectStorage {
 	 * @return void
 	*/
 	public function enable() {
+		if ($this->enabled) {
+			return;
+		}
 		$this->enabled = true;
-		$this->bound->each('enable');
+		if ($this->bound) {
+			$this->bound->each('enable');
+		}
 	}
 	
 	/**
@@ -165,6 +173,9 @@ class ConnectionPool extends ObjectStorage {
 	 * @return void
 	 */
 	public function disable() {
+		if (!$this->enabled) {
+			return;
+		}
 		$this->enabled = false;
 		if ($this->bound) {
 			$this->bound->each('disable');
@@ -225,9 +236,10 @@ class ConnectionPool extends ObjectStorage {
 
 	public function detachConn($conn) {
 		$this->detach($conn);
-		foreach ($this->bound as $bound) {
-			if ($bound->overload) {
-				while ($bound->onAcceptEvent()) {}
+		if ($conn->parentSocket) {
+			unset($conn->parentSocket->portsMap[$conn->addr]);
+			if ($conn->parentSocket->overload) {
+				$conn->parentSocket->onAcceptEvent();
 			}
 		}
 	}
@@ -249,9 +261,18 @@ class ConnectionPool extends ObjectStorage {
 				$addr = substr($addr, 5);
 				$socket = new BoundUNIXSocket($addr, $reuse);
 				
+			} elseif (stripos($addr, 'udp:') === 0) {
+				$addr = substr($addr, 4);
+				$socket = new BoundUDPSocket($addr, $reuse);
+				if (isset($this->config->port->value)) {
+					$socket->setDefaultPort($this->config->port->value);
+				}
 			} else {
 				if (stripos($addr,'tcp://') === 0) {
 					$addr = substr($addr, 6);
+				}
+				elseif (stripos($addr,'tcp:') === 0) {
+					$addr = substr($addr, 4);
 				}
 				$socket = new BoundTCPSocket($addr, $reuse);
 				if (isset($this->config->port->value)) {

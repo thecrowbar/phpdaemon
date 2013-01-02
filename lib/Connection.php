@@ -20,6 +20,9 @@ class Connection extends IOStream {
 	public $locPort;
 	public $keepaliveMode = false;
 	public $type;
+	public $parentSocket;
+	public $dgram = false;
+	public $timer;
 	public function parseUrl($url) {
 		if (strpos($url, '://') !== false) { // URL
 			$u = parse_url($url);
@@ -82,6 +85,18 @@ class Connection extends IOStream {
 		} catch (Exception $e) {
 			Daemon::uncaughtExceptionHandler($e);
 		}
+	}
+
+	/**
+	 * Send data to the connection. Note that it just writes to buffer that flushes at every baseloop
+	 * @param string Data to send.
+	 * @return boolean Success.
+	 */
+	public function write($data) {
+		if ($this->dgram) {
+			return socket_sendto($this->parentSocket->fd, $data, strlen($data), $this->finished ? MSG_EOF : 0, $this->host, $this->port);
+		}
+		return parent::write($data); // @todo
 	}
 
 	/**
@@ -153,13 +168,21 @@ class Connection extends IOStream {
 			$this->port = 0;
 			list (, $host) = explode(':', $addr, 2);
 			if (@inet_pton($host) === false) { // dirty condition check
-				DNSClient::getInstance()->resolve($host, function($real) use ($conn, $host) {
-					if ($real === false) {
+				DNSClient::getInstance()->resolve($host, function($result) use ($conn, $host) {
+					if ($result === false) {
 						Daemon::log(get_class($conn).'->connectTo (raw) : enable to resolve hostname: '.$host);
 						$conn->onFailureEvent(null);
 						return;
 					}
-					$conn->connectTo('raw:'.$real);
+					// @todo stack of addrs
+					if (is_array($result)) {
+						srand(Daemon::$process->pid);
+						$real = $result[rand(0, sizeof($result) - 1)];
+						srand();
+					} else {
+						$real = $result;
+					}
+					$conn->connectTo('raw:'. $real);
 				});
 				return;
 			}
@@ -183,11 +206,19 @@ class Connection extends IOStream {
 			list (, $host) = explode(':', $addr, 2);
 			$pton = @inet_pton($host);
 			if ($pton === false) { // dirty condition check
-				DNSClient::getInstance()->resolve($host, function($real) use ($conn, $host) {
-					if ($real === false) {
+				DNSClient::getInstance()->resolve($host, function($result) use ($conn, $host) {
+					if ($result === false) {
 						Daemon::log(get_class($conn).'->connectTo (udp) : enable to resolve hostname: '.$host);
 						$conn->onFailureEvent(null);
 						return;
+					}
+					// @todo stack of addrs
+					if (is_array($result)) {
+						srand(Daemon::$process->pid);
+						$real = $result[rand(0, sizeof($result) - 1)];
+						srand();
+					} else {
+						$real = $result;
 					}
 					$conn->connectTo('udp:'.$real, $conn->port);
 				});
@@ -221,11 +252,19 @@ class Connection extends IOStream {
 			$host = $addr;
 			$pton = @inet_pton($addr);
 			if ($pton === false) { // dirty condition check
-				DNSClient::getInstance()->resolve($this->host, function($real) use ($conn, $host) {
-					if ($real === false) {
+				DNSClient::getInstance()->resolve($this->host, function($result) use ($conn, $host) {
+					if ($result === false) {
 						Daemon::log(get_class($conn).'->connectTo (tcp) : enable to resolve hostname: '.$host);
 						$conn->onFailureEvent(null);
 						return;
+					}
+					// @todo stack of addrs
+					if (is_array($result)) {
+						srand(Daemon::$process->pid);
+						$real = $result[rand(0, sizeof($result) - 1)];
+						srand();
+					} else {
+						$real = $result;
 					}
 					$conn->connectTo($real, $conn->port);
 				});

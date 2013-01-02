@@ -61,10 +61,10 @@ class NetworkClient extends ConnectionPool {
 	 * Returns available connection from the pool
 	 * @param string Address
 	 * @param callback onConnected
-	 * @param boolean Unshift?
-	 * @return boolean Success.
+	 * @param integer Optional. Priority.
+	 * @return mixed Success|Connection.
 	 */
-	public function getConnection($url = null, $cb = null, $unshift = false) {
+	public function getConnection($url = null, $cb = null, $pri = 0) {
 		if (!is_string($url) && $url !== null && $cb === null) { // if called getConnection(function....)
 			$cb = $url;
 			$url = null; 
@@ -94,13 +94,9 @@ class NetworkClient extends ConnectionPool {
 			}
 			elseif ($storage->count() >= $this->maxConnPerServ) {
 				if (!isset($this->pending[$url])) {
-					$this->pending[$url] = new StackCallbacks;
+					$this->pending[$url] = new PriorityQueueCallbacks;
 				}
-				if ($unshift) {
-					$this->pending[$url]->unshift($cb);
-				} else {
-					$this->pending[$url]->push($cb);
-				}
+				$this->pending[$url]->enqueue($cb, $pri);
 				return true;
 			}
 			if ($conn) {
@@ -113,16 +109,12 @@ class NetworkClient extends ConnectionPool {
 			$this->servConn[$url] = new ObjectStorage;
 			$this->servConnFree[$url] = new ObjectStorage;
 		}
-		
 		$conn = $this->connect($url, $cb);
 
 		if (!$conn || $conn->finished) {
 			return false;
 		}
-
 		$this->servConn[$url]->attach($conn);
-		$this->servConnFree[$url]->attach($conn);
-
 		return true;
 	}
 
@@ -132,8 +124,11 @@ class NetworkClient extends ConnectionPool {
 	}
 
 	public function touchPending($url) {
-		if (isset($this->pending[$url]) && $this->pending[$url]->count()) {
-			while ($this->getConnection($url, $this->pending[$url]->shift(), true)) {}
+		while (isset($this->pending[$url]) && !$this->pending[$url]->isEmpty()) {
+			$r = $this->getConnection($url, $this->pending[$url]->dequeue());
+			if ($r === true) {
+				return;
+			}
 		}
 	}
 
@@ -178,7 +173,7 @@ class NetworkClient extends ConnectionPool {
 			if ($onResponse !== null) {
 				$conn->onResponse->push($onResponse);
 				$conn->setFree(false);
-			} elseif ($this->noSAF) {
+			} elseif ($conn->noSAF) {
 				$conn->onResponse->push(null);
 			}
 			$conn->write($data);
@@ -201,7 +196,7 @@ class NetworkClient extends ConnectionPool {
 			if ($onResponse !== NULL) {
 				$conn->onResponse->push($onResponse);
 				$conn->setFree(false);
-			} elseif ($this->noSAF) {
+			} elseif ($conn->noSAF) {
 				$conn->onResponse->push(null);
 			}
 			$conn->write($data);

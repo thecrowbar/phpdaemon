@@ -34,6 +34,7 @@ abstract class BoundSocket {
 	 */
 	public function setFd($fd) {
 		$this->ev = event_new();
+		$this->fd = $fd;
 		if (!event_set($this->ev, $fd, EV_READ | EV_PERSIST, array($this, 'onAcceptEvent'))) {
 			Daemon::log(get_class($this) . '::' . __METHOD__ . ': Couldn\'t set event on bound socket: ' . Debug::dump($fd));
 			return;
@@ -68,7 +69,7 @@ abstract class BoundSocket {
 		if (!is_resource($this->ev)) {
 			return;
 		}
-		event_del($this->ev); // bogus notice
+		event_del($this->ev);
 		event_free($this->ev);
 	}
 
@@ -107,6 +108,10 @@ abstract class BoundSocket {
 	 * @return void
 	 */
 	public function onAcceptEvent($stream = null, $events = 0, $arg = null) {
+		$this->accept();
+	}
+
+	public function accept() {
 		if (Daemon::$config->logevents->value) {
 			Daemon::$process->log(get_class($this) . '::' . __METHOD__ . ' invoked.');
 		}
@@ -120,12 +125,39 @@ abstract class BoundSocket {
 				return;
 			}
 		}
-		$fd = @socket_accept($stream);
+		$fd = @socket_accept($this->fd);
 		if (!$fd) {
 			return;
 		}
 		socket_set_nonblock($fd);	
 		$class = $this->pool->connectionClass;
  		return new $class($fd, $this->pool);
+	}
+
+	/**
+	 * Checks if the CIDR-mask matches the IP
+	 * @param string CIDR-mask
+	 * @param string IP
+	 * @return boolean Result
+	 */
+	public static function netMatch($CIDR, $IP) {
+		/* TODO: IPV6 */
+		if (is_array($CIDR)) {
+			foreach ($CIDR as &$v) {
+				if (self::netMatch($v, $IP)) {
+					return TRUE;
+				}
+			}
+		
+			return FALSE;
+		}
+
+		$e = explode ('/', $CIDR, 2);
+
+		if (!isset($e[1])) {
+			return $e[0] === $IP;
+		}
+
+		return (ip2long ($IP) & ~((1 << (32 - $e[1])) - 1)) === ip2long($e[0]);
 	}
 }
