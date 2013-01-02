@@ -40,13 +40,31 @@
 //			echo "<div style='height:250px; overflow:scroll; width:1000px;><pre>\n";
 //			print_r($this->app);
 //			echo "</pre></div>\n";
+			$trans_count = count($trans);
+			if ($trans_count < 1) {
+				echo "<h4>Job:</h4><pre>";
+				print_r($this->job);
+				echo "</pre>\n";
+				echo "<h4>\$this:</h4><pre>\n";
+				print_r($this);
+				echo "</pre>\n";
+			}
 		}else{
 			echo "<pre>\n";
 			print_r($this->job);
-			echo "</pre>\n";
+			echo "</pre>
+				</div>
+</body>
+</html>\n";
+			exit();
 		}
 		?>
-		<h3>Found <?php echo count($trans);?> transactions to process.</h3>
+		<h3>Found <?php echo $trans_count;?> transactions to process.</h3>
+		<h4>Memory Limit (bytes): <?php echo ini_get('memory_limit'); ?></h4>
+		<h4>Memory Usage (bytes): <?php echo memory_get_usage();?></h4>
+		<h4>Memory Real Usage (bytes): <?php echo memory_get_usage(true);?></h4>
+		<h4>Memory Peak Usage (bytes): <?php echo memory_get_peak_usage();?></h4>
+		<h4>Memory Real Peak Usage (bytes): <?php echo memory_get_peak_usage(true);?></h4>
 		<table>
 			<thead>
 				<tr>
@@ -81,7 +99,12 @@
 		<button value='Process Draft!' onclick="location.href='/Vendor/?command=submit_draft&draft_date=<?php echo $req->draft_date ?>&process=true'">Process Draft!</button><br />
 		Errors:<br />
 		<pre><?php print_r($req->err_msg); ?></pre><br />
-		<pre><?php print_r($req->attrs); ?></pre>
+		$req->attrs:
+		<pre><?php print_r($req->attrs); ?></pre><br />
+		<h4>Memory Usage (bytes): <?php echo memory_get_usage();?></h4>
+		<h4>Memory Real Usage (bytes): <?php echo memory_get_usage(true);?></h4>
+		<h4>Memory Peak Usage (bytes): <?php echo memory_get_peak_usage();?></h4>
+		<h4>Memory Real Peak Usage: <?php echo memory_get_peak_usage(true);?>b (<?php echo memory_get_peak_usage(true)/1024;?>k) (<?php echo memory_get_peak_usage(true)/(1024*1024);?>m)</h4>
 	</div>
 </body>
 </html>
