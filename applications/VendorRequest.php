@@ -82,7 +82,23 @@ class VendorRequest extends HTTPRequest{
 			//Daemon::log('$req:'.print_r($req, true));
 		}
 		
-		if (array_key_exists('command', $options) && $options['command'] === 'submit_draft') {
+		// create a job to query the database for pending transactions 
+		$job = $this->job = new ComplexJob(function() use ($req){
+			// wake the request up imediately when the job finishes
+			$req->wakeup();
+		});
+		
+		if (array_key_exists('stdin', $options)) {
+			$req->err_msg = "Attempting to use saved buffer for processing";
+			$req->html_file = 'Vendor.stdin_log.php';
+			// create a job to read in our buffer
+			$job->addJob('read_buffer', function($name, $job) use ($req){
+				//$result = file_get_contents('/opt/phpdaemon/stdin_raw2.log');
+				$result = file_get_contents('/opt/phpdaemon/stdin_raw3.log');
+				//$result = file_get_contents('/opt/phpdaemon/xad');
+				return $job->setResult($name, $result);
+			});
+		} else if (array_key_exists('command', $options) && $options['command'] === 'submit_draft') {
 			// here we submit a draft
 			// we must have a draft_date as well
 			$error = false;
@@ -113,11 +129,6 @@ class VendorRequest extends HTTPRequest{
 		}
 		
 		if (strlen($this->err_msg) < 1) {
-			// create a job to query the database for pending transactions 
-			$job = $this->job = new ComplexJob(function() use ($req){
-				// wake the request up imediately when the job finishes
-				$req->wakeup();
-			});
 			if ($which_job === 'submit_draft') {
 				// draft job
 				$job->addJob('submit_draft', function($name, $job) use ($req){
@@ -133,6 +144,7 @@ class VendorRequest extends HTTPRequest{
 							return $job->setResult($name, 'Error connecting to MySQL Server');
 						}
 						$query = Vendor::buildSubmitDraftSQL($req->draft_date);
+						Daemon::log('Query to get draft transactions:'.$query);
 						$sql->query($query, function($sql, $success) use ($job, $name, $query) {
 							if (!$success) {
 								if (Daemon::$debug){
@@ -188,14 +200,15 @@ class VendorRequest extends HTTPRequest{
 		// run our job
 		$job();
 		
+		$sleep_time = 2;
 		if (Daemon::$debug) {
-			Daemon::log(__METHOD__.' being put to sleep for 5 seconds');
+			Daemon::log(__METHOD__.' being put to sleep for '.$sleep_time.' seconds');
 		}
 		
 		// sleep for 5 seconds to give the query time to execute
 		// if the sleep() method is called outside of the run() method then the
 		// second parameter must be true
-		$this->sleep(5, true);
+		$this->sleep($sleep_time, true);
 		
 	}
 	
