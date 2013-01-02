@@ -6,10 +6,16 @@
  */
 class Vendor extends AppInstance{
 	/**
-	 * database connection
+	 * database object
 	 * @var MySQLClient Object
 	 */
 	public $sql;
+	
+	/**
+	 * database connection object
+	 * @var MySQlClientConnection opbject
+	 */
+	public $sql_conn;
 	
 	/**
 	 * This is our NetworkClient that connects to remote vendor
@@ -55,6 +61,12 @@ class Vendor extends AppInstance{
 	public $tq;
 	
 	/**
+	 * websoucket object to communicate with the client
+	 * @var VendorWebSocketRoute object
+	 */
+	public $ws;
+	
+	/**
 	 * The closure that handles communication over the web socket
 	 * @var VendorWebSocketRoute Object
 	 */
@@ -92,7 +104,10 @@ class Vendor extends AppInstance{
 	 */
 	public function init() {
 		// start xdebug trace of our code
-		//xdebug_start_trace('/var/log/phpdaemon/Vendor.trace');
+		xdebug_start_trace('/var/log/phpdaemon/Vendor.trace');
+		
+		// give ourself plenty of RAM
+		ini_set('memory_limit', '900M');
 		
 		// set our config values for easier access
 		$this->vendorhost = $this->config->vendorhosts->value;
@@ -115,6 +130,11 @@ class Vendor extends AppInstance{
 				)
 		);
 		$this->sql = MySQLClient::getInstance($mysql_config);
+//		Daemon::log('$this->sql:'.print_r($this->sql, true));
+//		exit();
+		
+		// create a connection to the MySQl server for use later
+		$this->sql_conn = $this->sql->getConnection();
 		
 		// initialize our queue
 		$this->tq = new SplQueue();
@@ -259,7 +279,7 @@ class Vendor extends AppInstance{
 	
 	/**
 	 * processReceivedData() - process the data returned by the remote vendor
-	 * @param ISO8583Trans $msg - the data received from the vendor
+	 * @param byte[] $msg - the data received from the vendor
 	 * @param VencodrClientConnection $conn - the remote connection
 	 * @param Vendor $app - a link back to this object
 	 */
@@ -285,21 +305,39 @@ class Vendor extends AppInstance{
 			if (Daemon::$debug) {
 				Daemon::log('Processing an AUTH_RESP or REV_RESP message');
 			}
+			
+			// log what our $app is
+			//Daemon::log('$app is of type:'.get_class($app));
+			//exit();
+//			Daemon::log('$app->sql_conn:'.print_r($app->sql_conn, true));
+//			Daemon::log('$app->sql:'.print_r($app->sql, true));
+			//exit();
 			// get a MySQl connection to update the record in the DB
-			$sql = $app->sql->getConnection(function($sql, $success) use ($conn, $app, $msg){
+			$sql_conn = $app->sql->getConnection(function($sql) use ($conn, $app, $msg){
 				// check for successful connection
-				if (!$success) {
-					Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
-					return;
-				}else {
-					Daemon::log('Got MySQL Connection!');
-				}
+				// if this callback runs we got a connection!
+//				if (!$success) {
+//					Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
+//					return;
+//				}else {
+//					Daemon::log('Got MySQL Connection!');
+//				}
+				
+				Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
 
 				$query = Vendor::buildQueryForOriginalTrans($msg, $app);
-//				if (Daemon::$debug) {
-//					Daemon::log('About to execute query:'.$query);
-//				}
+				if (Daemon::$debug) {
+					Daemon::log('About to execute query:'.$query);
+				}
 				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
+					Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
+					// check for a successful sql query
+					if (!$success) {
+						Deamon::log('Failed to run query:'.$query.' SQL Error:'.$sql->errmsg);
+						return;
+					}else{
+						Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing');
+					}
 					// get the data we need from our Database
 					$sql_results = $sql->resultRows;
 					if (count($sql_results) !== 1) {
@@ -311,7 +349,7 @@ class Vendor extends AppInstance{
 					try{
 						if (Daemon::$debug) {
 							Daemon::log('Original trans id:'.$sql_results[0]['id']);	
-					}
+						}
 						$msg->original_trans_id = $sql_results[0]['id'];
 						$msg->original_trans_amount = $sql_results[0]['trans_amount'];
 						if (Vendor::$decrypt_data) {
@@ -357,14 +395,16 @@ class Vendor extends AppInstance{
 
 			});
 			// check if our SQL connection failed
-			if (Daemon::$debug) {
-				if (is_object($sql) && $sql->connected){
-					Daemon::log('$sql->connected == true');
-				}else {
-					Daemon::log('$sql->connected !== true');
-				}
-				//Daemon::log(print_r($sql, true));
-			}
+//			if (Daemon::$debug) {
+//				if (is_object($sql_conn) && $sql_conn->connected){
+//					Daemon::log('$sql_conn->connected == true');
+//				}else {
+//					Daemon::log('$sql_conn->connected !== true');
+//					Daemon::log(print_r($sql_conn, true));
+//					//exit();
+//				}
+//				
+//			}
 		}
 	}
 	
