@@ -437,7 +437,7 @@ class Vendor extends AppInstance{
 								
 								// execute our callback (if any)
 								if (is_callable($cb)) {
-									call_user_function($cb);
+									call_user_func($cb);
 								}
 							}catch(Exception $e){
 								Daemon::log('ERROR Exception caught trying to create ISO8583! $e:'.$e);
