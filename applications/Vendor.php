@@ -10,11 +10,46 @@ class Vendor extends AppInstance{
 	 * WARNING WARNING WARNING - You must create your own key pair! Do not use this one!
 	 */
 	const PRIVATE_KEY = 'file:///opt/phpdaemon/test-rsa-2048-privkey.pem';
-    /**
-     * Flag that enables/disables extra log output
-     * @var bool
-     */
-	public static $debug = true;
+	
+	/**
+	 * Messages usefule for debugging
+	 */
+	const LOG_LEVEL_DEBUG = 9;
+	/**
+	 * Informational messages. May be too chatty for normal use.
+	 */
+	const LOG_LEVEL_INFO = 8;
+	/**
+	 * Not an error, but may require special handling
+	 */
+	const LOG_LEVEL_NOTICE = 7;
+	/**
+	 * Warning
+	 */
+	const LOG_LEVEL_WARNING = 6;
+	/**
+	 * Ordinary error
+	 */
+	const LOG_LEVEL_ERROR = 5;
+	/**
+	 * Critical condition
+	 */
+	const LOG_LEVEL_CRITICAL = 4;
+	/**
+	 * Indicates condition should be corrected immediately
+	 */
+	const LOG_LEVEL_ALERT = 3;
+	/**
+	 * Indicates and imminent crash or other major fault condition
+	 */
+	const LOG_LEVEL_EMERGENCY = 2;
+	
+	/**
+	 * Log Messages at or below this level will be sent to the phpd log
+	 * @var Int
+	 */
+	public static $log_level = self::LOG_LEVEL_DEBUG;
+	
 	/**
 	 * database object
 	 * @var MySQLClient Object
@@ -143,7 +178,7 @@ class Vendor extends AppInstance{
 	 * First method called when a new object is created.
 	 */
 	public function init() {
-		Daemon::log(__METHOD__.' start');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' start');
 		// start xdebug trace of our code
 		//xdebug_start_trace('/opt/phpdaemon/log/Vendor.trace');
 		
@@ -170,7 +205,7 @@ class Vendor extends AppInstance{
 				)
 		);
 		$this->sql = MySQLClient::getInstance($mysql_config);
-//		Daemon::log('$this->sql:'.print_r($this->sql, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->sql:'.print_r($this->sql, true));
 		
 		// create a connection to the MySQL server for use later
 		$this->sql_conn = $this->sql->getConnection();
@@ -182,12 +217,12 @@ class Vendor extends AppInstance{
 		if (self::$log_queries) {
 			$this->qfile = fopen($this->query_log_file, 'a+');
 			if ($this->qfile === false) {
-				Daemon::log('ERROR**ERROR Unable to open the query log file!');
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unable to open the query log file!');
 			}else {
 				fwrite($this->qfile, __CLASS__.' starting up at '.date('Y-m-d H:i:s'));
 			}
 		}
-		Daemon::log(__METHOD__.' end');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
 	}
 	
 	/**
@@ -195,7 +230,7 @@ class Vendor extends AppInstance{
 	 * @return void
 	 */
 	public function onReady() {
-		Daemon::log(__METHOD__.' start');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' start');
 		// if we have a client object, make sure it is ready and connected
 		if ($this->vendorclient) {
 			$this->vendorclient->onReady();
@@ -213,10 +248,10 @@ class Vendor extends AppInstance{
 		// start a timer to check the outbound queue every 90 seconds
 		$app = $this;
 		$this->keepaliveTimer = setTimeout(function($timer) use($app) {
-			Daemon::log(__METHOD__.' timer callback firing');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing');
 			$app->checkOutboundQueue($app);
 		}, 1e6 * 90);
-		Daemon::log(__METHOD__.' end');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
 	}
 	
 	/**
@@ -224,7 +259,7 @@ class Vendor extends AppInstance{
 	 * keepalive messages
 	 */
 	public function connect() {
-		Daemon::log(__METHOD__.' running');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running');
 		$app = $this;
 		$url = '';
 		// check for a passed callback and execute it when the job completes
@@ -240,21 +275,17 @@ class Vendor extends AppInstance{
 			foreach($args as $arg) {
 				if (is_object($arg) && is_callable($arg)) {
 					$callbacks[] = $arg;
-					if (self::$debug) {
-						Daemon::log(__METHOD__.' callback added!');
-					}
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' callback added!');
 				} else {
-					Daemon::log($arg.' is not an object and not callable');
+					Vendor::logger(Vendor::LOG_LEVEL_NOTICE, $arg.' is not an object and not callable');
 				}
 			}
 		}
-		if (self::$debug) {
-			Daemon::log('Found '.count($callbacks).' callbacks for '.__METHOD__);
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Found '.count($callbacks).' callbacks for '.__METHOD__);
 		
 		// check our connection, if it is connected then we run callbacks and return
 		if (!is_object($app)) {
-			Daemon::log('$app is not an object. FATAL! $this:'.print_r($this, true));
+			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, '$app is not an object. FATAL! $this:'.print_r($this, true));
 		}
 		if (is_object($app->vendorconn) && $app->vendorconn->isConnected()) {
 			if (count($callbacks) > 0) {
@@ -267,58 +298,53 @@ class Vendor extends AppInstance{
 
 			// if we have a url use it instead of the an auto selected default
 			if (strlen($url) > 0) {
-				Daemon::log(__METHOD__.':'.__LINE__.': url:'.$url);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.': url:'.$url);
 				$app->vendorclient->getConnection( $url, function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
 					if ($conn->isConnected()) {
-						if (self::$debug) {
-							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
-						}
-
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
 						self::attachEventHandlers($conn, $app);
 
 						// call our callback functions
-						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
 						foreach($callbacks as $cb) {
 							call_user_func($cb);
 						}
 					}
 					else {
-						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
 					}
 				});
 			} else {
-				Daemon::log(__METHOD__.':'.__LINE__.': using an auto selected value from the server list');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.': using an auto selected value from the server list');
 				// use an auto selected value from the servers list
 				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
 					if ($conn->isConnected()) {
-						if (self::$debug) {
-							Daemon::log(get_class($app).' connected at '.$conn->getHost().':'.$conn->getPort());
-						}
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app).' connected at '.$conn->getHost().':'.$conn->getPort());
 
 						self::attachEventHandlers($conn, $app);
 
 						// call our callback functions
-						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
 						foreach($callbacks as $cb) {
 							call_user_func($cb);
 						}
 					}
 					else {
-						Daemon::log('VendorClient: unable to connect ('.$conn->getHost().':'.$conn->getPort().')');
+						Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'VendorClient: unable to connect ('.$conn->getHost().':'.$conn->getPort().')');
 					}
 				});
 				if (is_object($obj) && !$obj->isConnected()) {
 					// connection failed. try other IP
 					$srv_list = explode(',',$app->vendorclient->config->servers->value);
-					Daemon::log('Servers list:'.print_r($srv_list, true));
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Servers list:'.print_r($srv_list, true));
 				} else if($obj === false) {
-					Daemon::log('Unable to connect! '.__METHOD__.':'.__LINE__);
+					Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unable to connect! '.__METHOD__.':'.__LINE__);
 				}
 			}
 		}
-		Daemon::log(__METHOD__.' end reached');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end reached');
 	}
 	
 	/**
@@ -332,9 +358,7 @@ class Vendor extends AppInstance{
 		// this closure handles the incoming data
 		// VendorClientConnection has done basic sanity checks to ensure 
 		// a complete message has made it through
-		if (self::$debug) {
-			//Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
 
 		// $msg is a string of bytes from TCP socket convert it into an object
 		try {
@@ -342,15 +366,13 @@ class Vendor extends AppInstance{
 			$iso_msg->addTCPMessage($msg);
 			$msg = $iso_msg;
 		} catch(Exception $e){
-			Daemon::log('Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
 			return;
 		}
 		if ($msg->msg_type === ISO8583::MSG_TYPE_AUTH_RESP 
 				|| $msg->msg_type === ISO8583::MSG_TYPE_REV_RESP) {
 			// this is a repsone to one of our messages, we need some information from the database
-			if (self::$debug) {
-				Daemon::log('Processing an AUTH_RESP or REV_RESP message');
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Processing an AUTH_RESP or REV_RESP message');
 			
 			// we first get the DB record id of the transaction and then update
 			// several tables with data from the response
@@ -370,14 +392,14 @@ class Vendor extends AppInstance{
 				} 
 
 				// output some basic debugging data to view
-				Daemon::log($msg->getBasicDebugData());
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, $msg->getBasicDebugData());
 				if (method_exists($msg, 'getBit63DebugData')){
-					//Daemon::log($msg->getBit63DebugData());
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, $msg->getBit63DebugData());
 				}
 			}); // end of 'trans_orig_rec' callback
 		} else {
 			// we received a message that is not AUTH_RESP or REV_RESP; log it
-			Daemon::log('NOTICE Received an ISO8583 message that is not 0110 or 0410! mti:'.$msg->getMTI());
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Received an ISO8583 message that is not 0110 or 0410! mti:'.$msg->getMTI());
 		}
 	}
 	
@@ -393,7 +415,7 @@ class Vendor extends AppInstance{
 	 */
 	public function createISOandSend($app, $req, $id, $track2 = null, $cvc = null,
 			$cb=null) {
-		Daemon::log('We need to create an ISO8553 Object and send it! $id:'.$id);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We need to create an ISO8553 Object and send it! $id:'.$id);
 		// if we have a $req object store it
 		if (is_object($req)) {
 			$app->pending_requests[$id] = $req;
@@ -404,7 +426,7 @@ class Vendor extends AppInstance{
 			if (is_array($result)) {
 				// check the submit_dt field
 				if ($result[0]['submit_dt'] !== '0000-00-00 00:00:00') {
-					Daemon::log('ERROR Transaction '.$result[0]['id'].' was submitted to FD on '.$result[0]['submit_dt'].'!');
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Transaction '.$result[0]['id'].' was submitted to FD on '.$result[0]['submit_dt'].'!');
 				} else {
 					// update the submit_dt field for this transaction
 					$q = SQL::updateSubmitDTQuery($result[0]['id']);
@@ -415,22 +437,22 @@ class Vendor extends AppInstance{
 					$tr['table49'] = $cvc;
 					$app->createJobFromQuery($app, $req, 'update_submit_dt', $q, false,
 							function($result) use($app, $req, $tr, $q, $cb){
-						Daemon::log('$result from update submit_dt:'.print_r($result, true));
-						Daemon::log('Update query:'.$q);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$result from update submit_dt:'.print_r($result, true));
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Update query:'.$q);
 						// check if we were able to update the transaction submit_dt value
 						// if not, then we need to bail.
 						if ($result !== 1) {
-							Daemon::log('ERROR Failed to update the submit_dt value for transaction:'.$tr['id'].', error:'.$sql->errmsg);
+							Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Failed to update the submit_dt value for transaction:'.$tr['id'].', error:'.$sql->errmsg);
 						} else {
 							try {
 								$app->vendorMessage = new VendorMessage($tr);
 								// send our iso
 								// add the message to our queue
 								$app->tq->enqueue($app->vendorMessage);
-								//Daemon::log('NOTICE! Not Adding message to outbound queue');
+								Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'NOTICE! Not Adding message to outbound queue');
 
 								// send the data to the remote vendor
-								Daemon::log('About to call Vendor->connect and pass in callback to checkOutboundQueue');
+								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call Vendor->connect and pass in callback to checkOutboundQueue');
 								$app->connect(function() use ($app){
 									$app->checkOutboundQueue($app);
 								});
@@ -440,7 +462,7 @@ class Vendor extends AppInstance{
 									call_user_func($cb);
 								}
 							}catch(Exception $e){
-								Daemon::log('ERROR Exception caught trying to create ISO8583! $e:'.$e);
+								Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to create ISO8583! $e:'.$e);
 							}
 						}
 					}); // end of createJobFromQuery
@@ -460,9 +482,7 @@ class Vendor extends AppInstance{
 	public function createResponseMsg($msg, $sr){
 		// add data from the original trans into our new object
 		try{
-			if (self::$debug) {
-				Daemon::log('Original trans id:'.$sr['id']);	
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
 			$msg->original_trans_id = $sr['id'];
 			$msg->original_trans_amount = $sr['trans_amount'];
 			if (self::$decrypt_data) {
@@ -492,15 +512,13 @@ class Vendor extends AppInstance{
 						$msg->card_type = 'Discover';
 						break;
 					default:
-						Daemon::log("User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
+						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
 				}
 			}
 
-			if (self::$debug) {
-				//Daemon::log('Finished adding data from original trans!');
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
 		}catch(Exception $e){
-			Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
 		}
 		return $msg;
 	}
@@ -523,7 +541,7 @@ class Vendor extends AppInstance{
 			}
 			$ws->client->sendFrame(json_encode($resp), 'STRING');
 		}catch(Exception $e) {
-			Daemon::log('Exception caught trying to create object for websocket! Exception:'.$e);
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to create object for websocket! Exception:'.$e);
 		}
 	}
 	
@@ -544,19 +562,16 @@ class Vendor extends AppInstance{
 			// success flag
 
 			if (!$success) {
-				if (self::$debug){
-					Daemon::log('getConnection failed in '.__METHOD__);
-				}
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in '.__METHOD__);
 			}
 			if (self::$log_queries && $app->qfile !== false) {
-				//Daemon::log('QUERY: '.join(";\n",$queries).";\n");
 				fwrite($app->qfile, "$query\n");
 			}
 
 			// execute a query on our sql object
 			$sql->query($query, function($sql, $success) use ($query) {
 				if (!$success) {
-					Daemon::log('Error executing query:'.$query);
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error executing query:'.$query);
 				}
 				// return the results of this query
 				return $sql;
@@ -580,7 +595,7 @@ class Vendor extends AppInstance{
 		while (count($queries) > 0 ) {
 			$query = array_shift($queries);
 			$sql = $app->executeQuery($app, $query);
-			//Daemon::log('$sql returned from executeQuery():'.print_r($sql, true));
+			//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$sql returned from executeQuery():'.print_r($sql, true));
 		}
 		
 		if (is_callable($cb)) {
@@ -593,26 +608,20 @@ class Vendor extends AppInstance{
 	 * @param Vendor $app
 	 */
 	public function checkOutboundQueue($app){
-		if (self::$debug) {
-			Daemon::log(__METHOD__.' running!');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running!');
 		// if there any items in the queue then send one off 
 		if (count($app->tq) > 0) {
 			// item exists in queue; check connection
-			if (self::$debug) {
-				Daemon::log(__METHOD__.' '.count($app->tq).' items exist in queue. Attempting to send one!');
-				Daemon::log('About to start while() trying to get connection');
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' '.count($app->tq).' items exist in queue. Attempting to send one!');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to start while() trying to get connection');
 			
 			while (!$app->vendorconn->connected) {
 				$app->connect();
 			}
-			if (self::$debug) {
-				Daemon::log('while() loop completed! Connected state:'.$app->vendorconn->connected);
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'while() loop completed! Connected state:'.$app->vendorconn->connected);
 			// check connection state and if established send message
 			if ($app->vendorconn->connected) {
-				Daemon::log('Attempting to send data to '.$app->vendorconn->hostReal);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to send data to '.$app->vendorconn->hostReal);
 				$msg = $app->tq->dequeue();
 				$app->vendorconn->sendData($msg->getTCPMessage());
 			}
@@ -626,7 +635,7 @@ class Vendor extends AppInstance{
 	 * @return object Request.
 	 */
 	public function beginRequest($req, $upstream) {
-		//Daemon::log(__METHOD__.' running');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running');
 		return new VendorRequest($this, $upstream, $req);
 	}
 	
@@ -638,10 +647,8 @@ class Vendor extends AppInstance{
 	 */
 	public function createMessage($msg_id, $ws_closure) {
 		$app = $this;
-		if (self::$debug) {
-			Daemon::log(__METHOD__.' called with argument:'.$msg_id);
-			//Daemon::log(__METHOD__.' callback is:'.print_r($cb, true));
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called with argument:'.$msg_id);
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' callback is:'.print_r($cb, true));
 		
 		// save our closure in appInstance so we can send data back to client 
 		// over web socket
@@ -674,20 +681,18 @@ class Vendor extends AppInstance{
 				// success flag
 				
 				if (!$success) {
-					if (self::$debug){
-						Daemon::log('getConnection failed in '.__METHOD__);
-					}
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in '.__METHOD__);
 					return $job->setResult($name, 'Error connecting to MySQL Server');
 				}
 				
 				// execute a query on our sql object
 				$id_string = join(',', $ids);
 				$query = "UPDATE cc_draft_log SET transmit_dt=NOW() WHERE id IN ({$id_string})";
-				//Daemon::log('About to execute query:'.$query);
+				//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'About to execute query:'.$query);
 				//$query = "{$app->trans_query}{$msg_id}";
 				$sql->query($query, function($sql, $success) use ($job, $name, $app, $query) {
 					if (!$success) {
-						Daemon::log('Error executing query:'.$query);
+						Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error executing query:'.$query);
 						return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
 					}
 					
@@ -717,12 +722,12 @@ class Vendor extends AppInstance{
 	 */
 	public function createJobFromQuery($app, $req, $job_name, $q, $wake, $cb = null){
 		$job = $req->job;
-		Daemon::log('Adding job:'.$job_name);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
 		$req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
 			// get our sql connection
 			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 				if (!$success) {
-					Daemon::log('ERROR getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
 				}
 				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 					// check if we should log all queries
@@ -730,7 +735,7 @@ class Vendor extends AppInstance{
 						fwrite($app->qfile, $q);
 					}
 					if (!$success) {
-						Daemon::log('ERROR executing query:'.$q.', error:'.$sql->errmsg);
+						Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'executing query:'.$q.', error:'.$sql->errmsg);
 						return $job->setResult($name, 'ERROR with Query! Query:'.$q.', error:'.$sql->errmsg);
 					} 
 					
@@ -742,30 +747,29 @@ class Vendor extends AppInstance{
 					$qtype = substr($q,0,strpos($q, ' '));
 					switch(trim(strtoupper($qtype))){
 						case 'INSERT':
-							Daemon::log(__METHOD__.' using the insertId value for job('.$name.') result!');
-							//Daemon::log(__METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the insertId value for job('.$name.') result!');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
 							$result = $sql->insertId;
 							break;
 						case 'SELECT':
-							Daemon::log(__METHOD__.' using the resultRows value for job('.$name.') result!');
-							Daemon::log(__METHOD__.' result contains '.count($sql->resultRows). ' entries');
-							//Daemon::log(__METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the resultRows value for job('.$name.') result!');
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' result contains '.count($sql->resultRows). ' entries');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
 							$result = $sql->resultRows;
 							break;
 						case 'UPDATE':
-							Daemon::log(__METHOD__.' using the affectedRows value for job('.$name.') result!');
-							//Daemon::log(__METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the affectedRows value for job('.$name.') result!');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
 							$result = $sql->affectedRows;
 							break;
 						default:
-							Daemon::log('WARNING Unknown query type:'.$qtype);
+							Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unknown query type:'.$qtype);
 							$result = $sql->errmsg;
 					}
 
 					// call any callback and pass it the $result from this job
 					if(is_callable($cb)) {
-						//$job->addListener($cb);
-						//Daemon::log('About to call_user_func() and pass $result:'.print_r($result, true));
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call_user_func() and pass $result:'.print_r($result, true));
 						call_user_func($cb, $result);
 					}
 					
@@ -773,7 +777,7 @@ class Vendor extends AppInstance{
 					// this prevents the request from waking before all queries have
 					// completed
 					if ($wake) {
-						Daemon::log('Attempting to call $req->wakeup()!');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to call $req->wakeup()!');
 						$job->setResult($name, $result);
 						$req->wakeup();
 					}
@@ -786,7 +790,7 @@ class Vendor extends AppInstance{
 		
 		//  if not set to wake the request, execute our job immediately
 		if (!$wake){
-			Daemon::log('Executing job('.$job_name.') now!');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
 			$job();
 		}
 	}
@@ -800,7 +804,7 @@ class Vendor extends AppInstance{
 	public static function decrypt_data($data){
 		$error = array();
 		$error['error_msg'] = '';
-		//Daemon::log('Attempting to decrypt data with length:'.strlen($data));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to decrypt data with length:'.strlen($data));
 		
 		$priv_key = openssl_get_privatekey(self::PRIVATE_KEY);
 		if (!$priv_key)
@@ -854,21 +858,21 @@ class Vendor extends AppInstance{
 		$conn->addEventHandler('disconnect', function($failed_ip, $failed_port) use ($app) {
 			$app->vendorconn->connected = false;
 
-			Daemon::log($failed_ip.':'.$failed_port.' disconnected. Attempting to reconnect');
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, $failed_ip.':'.$failed_port.' disconnected. Attempting to reconnect');
 			$srv_list = explode(',',$app->vendorclient->config->servers->value);
 			$new_ip = array_shift($srv_list);
 			if ($new_ip === $failed_ip) {
 				$new_ip = array_shift($srv_list);
 			}
 			// recall the connect function using the other IP
-			Daemon::log('About to attempt connection to: '.$new_ip.':'.$failed_port);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to attempt connection to: '.$new_ip.':'.$failed_port);
 			$app->connect("tcp://{$new_ip}:{$failed_port}");
 		});
 
 		// add a handler for when data is sent
 		$conn->addEventHandler('data_sent', function($data_length) use ($app){
 			// this is really just for testing
-			//Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
 		});
 	}
 	
@@ -897,6 +901,45 @@ class Vendor extends AppInstance{
 		//throw new NotImplementedException(); 
 		return 'unknown'; 
 	} 
+	
+	public static function logger($level, $msg) {
+		// if the level of this message is below our stated level then log;
+		// otherwise we discard
+		if ($level <= self::$log_level) {
+			Daemon::log(self::logLevelName($level).$msg);
+		}
+	}
+	
+	public static function logLevelName($level) {
+		switch($level) {
+			case 9:
+				return '[DEBUG] ';
+				break;
+			case 8:
+				return '[INFO] ';
+				break;
+			case 7:
+				return '[NOTICE] ';
+				break;
+			case 6:
+				return '[WARNING] ';
+				break;
+			case 5:
+				return '[ERROR] ';
+				break;
+			case 4:
+				return '[CRITICAL] ';
+				break;
+			case 3:
+				return '[ALERT] ';
+				break;
+			case 2:
+				return '[EMERGENCY] ';
+				break;
+			deafult: 
+				return '[UNKNOWN LVL ('.$level.')] ';
+		}
+	}
 	
 	// </editor-fold>
 	
