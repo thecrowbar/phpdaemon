@@ -19,13 +19,13 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Log file to record all incoming data to
 	 * @var String
 	 */
-	public $logfile_in = '/var/log/phpdaemon/stdin.log';
+	public $logfile_in = '/opt/phpdaemon/log/stdin.log';
 	
 	/**
 	 * Log file to record all outgoing data to
 	 * @var String
 	 */
-	public $logfile_out = '/var/log/phpdaemon/stdout.log';
+	public $logfile_out = '/opt/phpdaemon/log/stdout.log';
 	
 	/**
 	 * Timer that fires to send keep alive ISO8583 message over TCP
@@ -77,7 +77,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @param Closure $cb - callback to execute when the client connects
 	 */
 	public function onConnected($cb){
-		if (daemon::$debug) {
+		if (Vendor::$debug) {
 			Daemon::log(__METHOD__.' called. Connected to host:'.$this->host);
 		}
 		
@@ -108,14 +108,14 @@ class VendorClientConnection extends NetworkClientConnection {
 */
 	public function stdin($buf) {
 		// append our data to any log file
-		if (Daemon::$debug) {
+		if (Vendor::$debug) {
 			$file = fopen($this->logfile_in, 'a');
 			if ($file !== false) {
 				fwrite($file, $buf);
-				fwrite($file, "\n\n\n");
+				//fwrite($file, "\n\n\n");
 				fclose($file);
 			}
-			Daemon::log('Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
+			//Daemon::log('Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
 		}
 
 		// apend new data to our input buffer
@@ -138,8 +138,8 @@ class VendorClientConnection extends NetworkClientConnection {
 		if (($pkt_start = strpos($this->buf, $this->pkt_start_bytes)) === false) {
 			return;
 		}
-		if (Daemon::$debug) {
-			Daemon::log('Found packet start at offset: ' . $pkt_start);
+		if (Vendor::$debug) {
+			//Daemon::log('Found packet start at offset: ' . $pkt_start);
 		}
 		// good we found a packet, get our size
 		list (, $payload_size) = unpack('n', binarySubstr($this->buf, $pkt_start + $startsize, $this->pkt_size_bytes));
@@ -188,7 +188,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @param callback $cb
 	 */
 	public function addEventHandler($event, $cb) {
-		if (is_callable($cb) && Daemon::$debug){
+		if (is_callable($cb) && Vendor::$debug){
 			Daemon::log('Adding a callback for event: '.$event);
 		}
 		if (!isset($this->eventHandlers[$event])) {
@@ -198,7 +198,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		if (!in_array($cb, $this->eventHandlers[$event])) {
 			$this->eventHandlers[$event][] = $cb;
 		}
-		if (Daemon::$debug) {
+		if (Vendor::$debug) {
 			Daemon::log('There are now '.count($this->eventHandlers[$event]).' handlers defined for event: '.$event);
 		}
 	}
@@ -217,14 +217,14 @@ class VendorClientConnection extends NetworkClientConnection {
 	public function sendData($data) {		
 		try{
 			// append our data to any log file
-			if (Daemon::$debug) {
+			if (Vendor::$debug) {
 				$file = fopen($this->logfile_out, 'a');
 				if ($file !== false) {
 					fwrite($file, $data);
 					fwrite($file, "\n\n\n");
 					fclose($file);
 				}
-				Daemon::log('Wrote '.strlen($data).' bytes of data.');
+				//Daemon::log('Wrote '.strlen($data).' bytes of data.');
 			}
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);

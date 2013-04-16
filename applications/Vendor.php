@@ -6,6 +6,16 @@
  */
 class Vendor extends AppInstance{
 	/**
+	 * RSA Private Key used to decrypt data\
+	 * WARNING WARNING WARNING - You must create your own key pair! Do not use this one!
+	 */
+	const PRIVATE_KEY = 'file:///opt/phpdaemon/test-rsa-2048-privkey.pem';
+    /**
+     * Flag that enables/disables extra log output
+     * @var bool
+     */
+	public static $debug = true;
+	/**
 	 * database object
 	 * @var MySQLClient Object
 	 */
@@ -30,10 +40,10 @@ class Vendor extends AppInstance{
 	public $vendorconn;
 	
 	/**
-	 * Query to run to retrieve a transaction from the database
-	 * @var String
+	 * The DB table that holds the transactions for this appInstance
+	 *@var String
 	 */
-	public $trans_query;
+	public $trans_table_name = 'fd_draft_data';
 	
 	/**
 	 * The vendor message
@@ -72,6 +82,18 @@ class Vendor extends AppInstance{
 	 */
 	public $ws_closure;
 	
+	/**
+	 * Web Socket Route to use 
+	 * @var String
+	 */
+	public $WebSocketRoute = 'VendorWS';
+	
+	/**
+	 * Flag that signals the decryption of the account number from the original
+	 * transaction. This is no longer needed because the card type is pulled
+	 * from the original transaction instead.
+	 * @var bool
+	 */
 	public static $decrypt_data = true;
 	
 	/**
@@ -88,6 +110,24 @@ class Vendor extends AppInstance{
 	public static $test_set_only = false;
 	
 	/**
+	 * Flag to indicate if queries should be logged instead of executed
+	 * @var bool
+	 */
+	public static $log_queries = true;
+	
+	/**
+	 * File name to save queries to if $log_queries is set
+	 * @var String
+	 */
+	public $query_log_file = '/opt/phpdaemon/log/vendor.queries.log';
+	
+	/**
+	 * File handle for the query log
+	 * @var Resource
+	 */
+	public $qfile;
+	
+	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
 	 * Uncomment and return array with your default options
@@ -100,11 +140,12 @@ class Vendor extends AppInstance{
 //	}
 	
 	/**
-	 * First method called when a new object in created.
+	 * First method called when a new object is created.
 	 */
 	public function init() {
+		Daemon::log(__METHOD__.' start');
 		// start xdebug trace of our code
-		xdebug_start_trace('/var/log/phpdaemon/Vendor.trace');
+		//xdebug_start_trace('/opt/phpdaemon/log/Vendor.trace');
 		
 		// give ourself plenty of RAM
 		ini_set('memory_limit', '900M');
@@ -112,7 +153,6 @@ class Vendor extends AppInstance{
 		// set our config values for easier access
 		$this->vendorhost = $this->config->vendorhosts->value;
 		$this->vendorport = $this->config->vendorport->value;
-		$this->trans_query = $this->config->trans_query->value;
 		
 		// get an intial connection
 		$svr_config = new Daemon_ConfigSection(array('servers'=>"{$this->vendorhost}", 'port'=>"{$this->vendorport}"));
@@ -126,27 +166,36 @@ class Vendor extends AppInstance{
 		$sql_db = $this->config->sqldb->value;
 		$mysql_config = new Daemon_configSection(
 				array(
-						'server'=>"mysql://{$sql_user}:{$sql_pass}@{$sql_host}/{$sql_db}"
+						'server'=>"tcp://{$sql_user}:{$sql_pass}@{$sql_host}/{$sql_db}"
 				)
 		);
 		$this->sql = MySQLClient::getInstance($mysql_config);
 //		Daemon::log('$this->sql:'.print_r($this->sql, true));
-//		exit();
 		
-		// create a connection to the MySQl server for use later
+		// create a connection to the MySQL server for use later
 		$this->sql_conn = $this->sql->getConnection();
 		
-		// initialize our queue
+		// initialize our queue to hold outgoing transactions
 		$this->tq = new SplQueue();
-
+		
+		// setup our log file to save queries; if flag is set
+		if (self::$log_queries) {
+			$this->qfile = fopen($this->query_log_file, 'a+');
+			if ($this->qfile === false) {
+				Daemon::log('ERROR**ERROR Unable to open the query log file!');
+			}else {
+				fwrite($this->qfile, __CLASS__.' starting up at '.date('Y-m-d H:i:s'));
+			}
+		}
+		Daemon::log(__METHOD__.' end');
 	}
 	
-
 	/**
 	 * Called when the worker is ready to go.
 	 * @return void
 	 */
 	public function onReady() {
+		Daemon::log(__METHOD__.' start');
 		// if we have a client object, make sure it is ready and connected
 		if ($this->vendorclient) {
 			$this->vendorclient->onReady();
@@ -157,7 +206,7 @@ class Vendor extends AppInstance{
 		// Default WebSocket port is 8047.
 		// The path is 'VendorWS'. Change it below if required
 		$appInstance = $this; // a reference to this application instance for the WebSocketRoute
-		WebSocketServer::getInstance()->addRoute('VendorWS', function ($client) use ($appInstance) {
+		WebSocketServer::getInstance()->addRoute($this->WebSocketRoute, function ($client) use ($appInstance) {
 			return new VendorWebSocketRoute($client, $appInstance);
 		});
 		
@@ -167,6 +216,7 @@ class Vendor extends AppInstance{
 			Daemon::log(__METHOD__.' timer callback firing');
 			$app->checkOutboundQueue($app);
 		}, 1e6 * 90);
+		Daemon::log(__METHOD__.' end');
 	}
 	
 	/**
@@ -174,16 +224,13 @@ class Vendor extends AppInstance{
 	 * keepalive messages
 	 */
 	public function connect() {
-		//Daemon::log(__METHOD__.' running');
+		Daemon::log(__METHOD__.' running');
 		$app = $this;
 		$url = '';
 		// check for a passed callback and execute it when the job completes
 		$args = func_get_args();
 		$callbacks = array();
 		if (count($args) > 0) {
-//			if (Daemon::$debug) {
-//				Daemon::log('connect() args:'.print_r($args, true));
-//			}
 
 			// check the first arguments to see if it a url
 			if (!is_object($args[0]) && !is_callable($args[0])) {
@@ -193,7 +240,7 @@ class Vendor extends AppInstance{
 			foreach($args as $arg) {
 				if (is_object($arg) && is_callable($arg)) {
 					$callbacks[] = $arg;
-					if (Daemon::$debug) {
+					if (self::$debug) {
 						Daemon::log(__METHOD__.' callback added!');
 					}
 				} else {
@@ -201,7 +248,7 @@ class Vendor extends AppInstance{
 				}
 			}
 		}
-		if (Daemon::$debug) {
+		if (self::$debug) {
 			Daemon::log('Found '.count($callbacks).' callbacks for '.__METHOD__);
 		}
 		
@@ -209,7 +256,7 @@ class Vendor extends AppInstance{
 		if (!is_object($app)) {
 			Daemon::log('$app is not an object. FATAL! $this:'.print_r($this, true));
 		}
-		if (is_object($app->vendorconn) && $app->vendorconn->connected) {
+		if (is_object($app->vendorconn) && $app->vendorconn->isConnected()) {
 			if (count($callbacks) > 0) {
 				foreach($callbacks as $cb) {
 					call_user_func($cb);
@@ -217,25 +264,18 @@ class Vendor extends AppInstance{
 			}
 			//return true;
 		} else {
-//			if (Daemon::$debug) {
-//				Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
-//			}
+
 			// if we have a url use it instead of the an auto selected default
 			if (strlen($url) > 0) {
-//				if (Daemon::$debug) {
-//					Daemon::log('Vendor::connect() using VendorClient config:'.print_r($app->vendorclient->config, true));
-//				}
-				$app->vendorclient->getConnection( $url, function ($conn, $success) use ($app, $callbacks) {
-					if (!$success) {
-						Daemon::log('getConnection() failed!');
-					}
+				Daemon::log(__METHOD__.':'.__LINE__.': url:'.$url);
+				$app->vendorclient->getConnection( $url, function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
-					if ($conn->connected) {
-						if (Daemon::$debug) {
+					if ($conn->isConnected()) {
+						if (self::$debug) {
 							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
 						}
 
-						Vendor::attachEventHandlers($conn, $app, $msg);
+						self::attachEventHandlers($conn, $app);
 
 						// call our callback functions
 						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
@@ -248,15 +288,16 @@ class Vendor extends AppInstance{
 					}
 				});
 			} else {
+				Daemon::log(__METHOD__.':'.__LINE__.': using an auto selected value from the server list');
 				// use an auto selected value from the servers list
 				$obj = $app->vendorclient->getConnection( function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
-					if ($conn->connected) {
-						if (Daemon::$debug) {
-							Daemon::log(get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
+					if ($conn->isConnected()) {
+						if (self::$debug) {
+							Daemon::log(get_class($app).' connected at '.$conn->getHost().':'.$conn->getPort());
 						}
 
-						Vendor::attachEventHandlers($conn, $app);
+						self::attachEventHandlers($conn, $app);
 
 						// call our callback functions
 						Daemon::log('Vendor->connect()->closure(), about to call '.count($callbacks).' callbacks');
@@ -265,16 +306,19 @@ class Vendor extends AppInstance{
 						}
 					}
 					else {
-						Daemon::log('VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+						Daemon::log('VendorClient: unable to connect ('.$conn->getHost().':'.$conn->getPort().')');
 					}
 				});
-				if (is_object($obj) && !$obj->connected) {
+				if (is_object($obj) && !$obj->isConnected()) {
 					// connection failed. try other IP
 					$srv_list = explode(',',$app->vendorclient->config->servers->value);
 					Daemon::log('Servers list:'.print_r($srv_list, true));
+				} else if($obj === false) {
+					Daemon::log('Unable to connect! '.__METHOD__.':'.__LINE__);
 				}
 			}
 		}
+		Daemon::log(__METHOD__.' end reached');
 	}
 	
 	/**
@@ -284,11 +328,12 @@ class Vendor extends AppInstance{
 	 * @param Vendor $app - a link back to this object
 	 */
 	public function processReceivedData($msg, $conn, $app){
+		$app = $this;
 		// this closure handles the incoming data
 		// VendorClientConnection has done basic sanity checks to ensure 
 		// a complete message has made it through
-		if (Daemon::$debug) {
-			Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
+		if (self::$debug) {
+			//Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
 		}
 
 		// $msg is a string of bytes from TCP socket convert it into an object
@@ -298,114 +343,166 @@ class Vendor extends AppInstance{
 			$msg = $iso_msg;
 		} catch(Exception $e){
 			Daemon::log('Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
+			return;
 		}
 		if ($msg->msg_type === ISO8583::MSG_TYPE_AUTH_RESP 
 				|| $msg->msg_type === ISO8583::MSG_TYPE_REV_RESP) {
 			// this is a repsone to one of our messages, we need some information from the database
-			if (Daemon::$debug) {
+			if (self::$debug) {
 				Daemon::log('Processing an AUTH_RESP or REV_RESP message');
 			}
 			
-			// log what our $app is
-			//Daemon::log('$app is of type:'.get_class($app));
-			//exit();
-//			Daemon::log('$app->sql_conn:'.print_r($app->sql_conn, true));
-//			Daemon::log('$app->sql:'.print_r($app->sql, true));
-			//exit();
-			// get a MySQl connection to update the record in the DB
-			$sql_conn = $app->sql->getConnection(function($sql) use ($conn, $app, $msg){
-				// check for successful connection
-				// if this callback runs we got a connection!
-//				if (!$success) {
-//					Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
-//					return;
-//				}else {
-//					Daemon::log('Got MySQL Connection!');
-//				}
-				
-				Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
+			// we first get the DB record id of the transaction and then update
+			// several tables with data from the response
+			$q = SQL::buildQueryForOriginalTrans($msg, $app);
+			$app->createJobFromQuery($app, null, 'trans_orig_rec', $q, false, 
+					function($result)use($app, $req, $job, $name, $msg){
+				// process our response into a complete ISO8585 msg
+				$msg = $app->createResponseMsg($msg, $result[0]);
 
-				$query = Vendor::buildQueryForOriginalTrans($msg, $app);
-				if (Daemon::$debug) {
-					Daemon::log('About to execute query:'.$query);
+				// at this point we have a complete transaction response
+				// we need to update the original transaction in the database
+				$app->updateTransInDB($msg, $app);
+
+				// update the client over websocket that we received a response
+				if (is_object($app->ws)) {
+					$app->updateClientWS($app->ws, $msg);
+				} 
+
+				// output some basic debugging data to view
+				Daemon::log($msg->getBasicDebugData());
+				if (method_exists($msg, 'getBit63DebugData')){
+					//Daemon::log($msg->getBit63DebugData());
 				}
-				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
-					Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
-					// check for a successful sql query
-					if (!$success) {
-						Deamon::log('Failed to run query:'.$query.' SQL Error:'.$sql->errmsg);
-						return;
-					}else{
-						Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing');
-					}
-					// get the data we need from our Database
-					$sql_results = $sql->resultRows;
-					if (count($sql_results) !== 1) {
-						//Daemon::log('Incorrect number of results found for query:'.$query);
-						Daemon::log('Incorrect number of results found for query:'.$query);
-					}
+			}); // end of 'trans_orig_rec' callback
+		} else {
+			// we received a message that is not AUTH_RESP or REV_RESP; log it
+			Daemon::log('NOTICE Received an ISO8583 message that is not 0110 or 0410! mti:'.$msg->getMTI());
+		}
+	}
+	
+	/**
+	 * createISOandSend() - given a DB record id, create an ISO8583 message and
+	 * submit
+	 * @param RealTimeTrans $app - the appInstance we are communicating with
+	 * @param RealTimeTransRequest $req - the HTTP Request for this transaction
+	 * @param type $id - the DB record id to send
+	 * @param type $track2 - the track2 data from a card swipe
+	 * @param String $cvc - the Card Security Code from the credit card
+	 * @param Closure $cb - additional callback to execute once the transaction is sent
+	 */
+	public function createISOandSend($app, $req, $id, $track2 = null, $cvc = null,
+			$cb=null) {
+		Daemon::log('We need to create an ISO8553 Object and send it! $id:'.$id);
+		// if we have a $req object store it
+		if (is_object($req)) {
+			$app->pending_requests[$id] = $req;
+		}
+		$app->createJobFromQuery($app, $req, 'new_iso', SQL::singleTransDetailQuery($id), false,
+				function($result) use($app, $req, $track2, $cvc, $cb){
+			// first check if this transaction was already submitted
+			if (is_array($result)) {
+				// check the submit_dt field
+				if ($result[0]['submit_dt'] !== '0000-00-00 00:00:00') {
+					Daemon::log('ERROR Transaction '.$result[0]['id'].' was submitted to FD on '.$result[0]['submit_dt'].'!');
+				} else {
+					// update the submit_dt field for this transaction
+					$q = SQL::updateSubmitDTQuery($result[0]['id']);
+					$tr = $result[0];
+					// add in our submit_dt, track2, and cvc data
+					$tr['submit_dt'] = date('Y-m-d H:i:s');
+					$tr['track2'] = $track2;
+					$tr['table49'] = $cvc;
+					$app->createJobFromQuery($app, $req, 'update_submit_dt', $q, false,
+							function($result) use($app, $req, $tr, $q, $cb){
+						Daemon::log('$result from update submit_dt:'.print_r($result, true));
+						Daemon::log('Update query:'.$q);
+						// check if we were able to update the transaction submit_dt value
+						// if not, then we need to bail.
+						if ($result !== 1) {
+							Daemon::log('ERROR Failed to update the submit_dt value for transaction:'.$tr['id'].', error:'.$sql->errmsg);
+						} else {
+							try {
+								$app->vendorMessage = new VendorMessage($tr);
+								// send our iso
+								// add the message to our queue
+								$app->tq->enqueue($app->vendorMessage);
+								//Daemon::log('NOTICE! Not Adding message to outbound queue');
 
-					// add data from the original trans into our new object
-					try{
-						if (Daemon::$debug) {
-							Daemon::log('Original trans id:'.$sql_results[0]['id']);	
-						}
-						$msg->original_trans_id = $sql_results[0]['id'];
-						$msg->original_trans_amount = $sql_results[0]['trans_amount'];
-						if (Vendor::$decrypt_data) {
-							$data = Vendor::decrypt_data($sql_results[0]['pri_acct_no']);
-							if (is_array($data)){
-								throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
-							}else {
-								$sql_results[0]['pri_acct_no'] = $data;
+								// send the data to the remote vendor
+								Daemon::log('About to call Vendor->connect and pass in callback to checkOutboundQueue');
+								$app->connect(function() use ($app){
+									$app->checkOutboundQueue($app);
+								});
+								
+								// execute our callback (if any)
+								if (is_callable($cb)) {
+									call_user_function($cb);
+								}
+							}catch(Exception $e){
+								Daemon::log('ERROR Exception caught trying to create ISO8583! $e:'.$e);
 							}
 						}
-						$msg->pri_acct_no = $sql_results[0]['pri_acct_no'];
-						$msg->credit_card = new CreditCard($msg->pri_acct_no);
-						$msg->card_type = $msg->credit_card->card_type;
-						if (Daemon::$debug) {
-							Daemon::log('Finished adding data from original trans!');
-						}
-					}catch(Exception $e){
-						Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
-					}
+					}); // end of createJobFromQuery
+				}
+			}
+		}); // end of outer createJobFromQuery
+	}
+	
+	
+	/**
+	 * Flush out a complete ISO8583Trans object from the returned message data
+	 * @param ISO8583Trans $msg - the empty ISO8583 trans object
+	 * @param Array $sr - the DB record from the original transaction.
+	 * @return ISO8583Trans
+	 * @throws Exception
+	 */
+	public function createResponseMsg($msg, $sr){
+		// add data from the original trans into our new object
+		try{
+			if (self::$debug) {
+				Daemon::log('Original trans id:'.$sr['id']);	
+			}
+			$msg->original_trans_id = $sr['id'];
+			$msg->original_trans_amount = $sr['trans_amount'];
+			if (self::$decrypt_data) {
+				$data = self::decrypt_data($sr['pri_acct_no']);
+				if (is_array($data)){
+					throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
+				}else {
+					// save our encrypted account number
+					$msg->encrypted_acct_no = $sr['pri_acct_no'];
+					$msg->pri_acct_no = $data;
+					$msg->credit_card = new CreditCard($msg->pri_acct_no);
+					$msg->card_type = $msg->credit_card->card_type;
+				}
+			} else {
+				// pull the card type from the original trans query data
+				switch($sr['cc_type']) {
+					case 'VS':
+						$msg->card_type = 'Visa';
+						break;
+					case 'MC':
+						$msg->card_type = 'Master Card';
+						break;
+					case 'AX':
+						$msg->card_type = 'American Express';
+						break;
+					case 'DS':
+						$msg->card_type = 'Discover';
+						break;
+					default:
+						Daemon::log("User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
+				}
+			}
 
-					// at this point we have a complete transaction response
-					// we need to update the original transaction in the database
-					$app->updateTransInDB($msg, $app);
-					
-
-					// update the client over websocket that we received a response
-					if (is_object($app->ws)) {
-						$app->updateClientWS($app->ws, $msg);
-					} else {
-						if (Daemon::$debug){
-							//Daemon::log(Debug::dump($app));
-						}
-						Daemon::log('$app->ws is not an object! Unable to send response over websocket!');
-					}
-
-
-					// output some basic debugging data to view
-					Daemon::log($msg->getBasicDebugData());
-					if (method_exists($msg, 'getBit63DebugData')){
-						//Daemon::log($msg->getBit63DebugData());
-					}
-				});
-
-			});
-			// check if our SQL connection failed
-//			if (Daemon::$debug) {
-//				if (is_object($sql_conn) && $sql_conn->connected){
-//					Daemon::log('$sql_conn->connected == true');
-//				}else {
-//					Daemon::log('$sql_conn->connected !== true');
-//					Daemon::log(print_r($sql_conn, true));
-//					//exit();
-//				}
-//				
-//			}
+			if (self::$debug) {
+				//Daemon::log('Finished adding data from original trans!');
+			}
+		}catch(Exception $e){
+			Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
 		}
+		return $msg;
 	}
 	
 	/**
@@ -431,72 +528,64 @@ class Vendor extends AppInstance{
 	}
 	
 	/**
+	 * executeQuery() - get a MySQL connection and execute a query against the DB
+	 * @param Vendor $app - our main application object
+	 * @param String $query - the SQL to execute against the DB
+	 * @param ISO8583Trans $msg - the transaction message object
+	 * @param ComplexJob $job - object that stores our jobs
+	 * @param String $name - job name to save results to
+	 * @return bool - was the MySQL connection successful
+	 * @note This does not return a status for the query itself
+	 */
+	public function executeQuery($app, $query) {
+		// get a connection to our MySQL database
+		return $app->sql->getConnection(function($sql, $success) use ($query, $app) {
+			// the MySQL getConnection callback is passed the MySQL object and a boolean
+			// success flag
+
+			if (!$success) {
+				if (self::$debug){
+					Daemon::log('getConnection failed in '.__METHOD__);
+				}
+			}
+			if (self::$log_queries && $app->qfile !== false) {
+				//Daemon::log('QUERY: '.join(";\n",$queries).";\n");
+				fwrite($app->qfile, "$query\n");
+			}
+
+			// execute a query on our sql object
+			$sql->query($query, function($sql, $success) use ($query) {
+				if (!$success) {
+					Daemon::log('Error executing query:'.$query);
+				}
+				// return the results of this query
+				return $sql;
+			});			
+				
+		});
+	}
+	
+	/**
 	 * updateTransInDB() - save the response from the remote vendor for this message
 	 * @param ISO8583Trans $msg - the message returned from the remote vendor
+	 * @param self $app - the appInstance we are running under
+	 * @param HTTPRequest $req - the HTTP Request (if any)
+	 * @param Callable $cb - function to execute on completion
 	 */
-	public function updateTransInDB($msg, $app) {
-		//FIXME
-		//TODO Update this code
-		$app->sql->getConnection(function($sql, $success) use ($app, $msg){
-			// check for successful connection
-			if (!$success) {
-				Daemon::log('Failed to get MySQL connection! host:'.$sql->host);
-				return;
-			}else {
-				Daemon::log('Got MySQL Connection!');
-			}
-			
-			// there are several queries required to update the different tables
-			$queries = Vendor::buildQueryForTransUpdate($msg, $app);
+	public function updateTransInDB($msg, $app, $req = null, $cb = null) {
+		// there are several queries required to update the different tables
+		// $queries is an array of queries
+		$queries = SQL::buildQueryForTransUpdate($msg, $app);
+		
+		while (count($queries) > 0 ) {
 			$query = array_shift($queries);
-				
-			$sql->query($query, function($sql, $success) use($app, $msg, $query, $queries){
-				if ($success) {
-					//Daemon::log(Debug::dump($sql));
-					//Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id.' query:'.$query);
-					Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id);
-				} else {
-					//Daemon::log(Debug::dump($sql));
-					Daemon::log('Error updating DB! query:'.$query.', error:'.$sql->errmsg);
-				}
-				
-				// check if we have any queries to run
-				if (count($queries) > 0) {
-					// run the next query
-					$query = array_shift($queries);
-					$sql->query($query, function($sql, $success) use($msg, $query, $queries){
-						if ($success) {
-							//Daemon::log(Debug::dump($sql));
-							//Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id.' query:'.$query);
-							Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id);
-						} else {
-							//Daemon::log(Debug::dump($sql));
-							Daemon::log('Error updating DB! query:'.$query.', error:'.$sql->errmsg);
-						}
-						
-						if (count($queries) > 0) {
-							// run the next query
-							$query = array_shift($queries);
-							$sql->query($query, function($sql, $success) use($msg, $query, $queries){
-								if ($success) {
-									//Daemon::log(Debug::dump($sql));
-									//Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id.' query:'.$query);
-									Daemon::log('Successfully updated transaction with id '.$msg->original_trans_id);
-								} else {
-									//Daemon::log(Debug::dump($sql));
-									Daemon::log('Error updating DB! query:'.$query.', error:'.$sql->errmsg);
-								}
-								
-								if (count($queries) > 0) {
-									Daemon::log('There are '.count($queries).' left to run, but recursion limit reached!');
-									Daemon::log('Queries:'.print_r($queries,true));
-								}
-							});
-						}
-					});
-				}
-			});
-		});
+			$sql = $app->executeQuery($app, $query);
+			//Daemon::log('$sql returned from executeQuery():'.print_r($sql, true));
+		}
+		
+		if (is_callable($cb)) {
+			call_user_func($cb);
+		}		
 	}
 	
 	/**
@@ -504,25 +593,21 @@ class Vendor extends AppInstance{
 	 * @param Vendor $app
 	 */
 	public function checkOutboundQueue($app){
-		if (Daemon::$debug) {
+		if (self::$debug) {
 			Daemon::log(__METHOD__.' running!');
 		}
 		// if there any items in the queue then send one off 
 		if (count($app->tq) > 0) {
 			// item exists in queue; check connection
-			if (Daemon::$debug) {
+			if (self::$debug) {
 				Daemon::log(__METHOD__.' '.count($app->tq).' items exist in queue. Attempting to send one!');
 				Daemon::log('About to start while() trying to get connection');
 			}
 			
 			while (!$app->vendorconn->connected) {
 				$app->connect();
-				if (Daemon::$debug) {
-					Daemon::log('Sleeping 10 seconds to wait for connection to establish');
-				}
-				//sleep(10);
 			}
-			if (Daemon::$debug) {
+			if (self::$debug) {
 				Daemon::log('while() loop completed! Connected state:'.$app->vendorconn->connected);
 			}
 			// check connection state and if established send message
@@ -531,8 +616,6 @@ class Vendor extends AppInstance{
 				$msg = $app->tq->dequeue();
 				$app->vendorconn->sendData($msg->getTCPMessage());
 			}
-				
-			//$conn = $app->get
 		}
 	}
 	
@@ -555,7 +638,7 @@ class Vendor extends AppInstance{
 	 */
 	public function createMessage($msg_id, $ws_closure) {
 		$app = $this;
-		if (Daemon::$debug) {
+		if (self::$debug) {
 			Daemon::log(__METHOD__.' called with argument:'.$msg_id);
 			//Daemon::log(__METHOD__.' callback is:'.print_r($cb, true));
 		}
@@ -564,71 +647,7 @@ class Vendor extends AppInstance{
 		// over web socket
 		$this->ws = $ws_closure;
 		
-		// create a job to store our MySQL results
-		$job = $this->job = new ComplexJob();
-		
-		// register the trans_row job. This is where the main data to create ISO8583
-		// will come from
-		$job->addJob('msg_row', function($name, $job) use($app, $msg_id){
-			// the addJob callback gets called with the job name and job object as callbacks
-			// we also need access to our appInstance and the msg_id for our query
-			
-			// get a connection to our MySQL database
-			$app->sql->getConnection(function($sql, $success) use ($name, $job, $app, $msg_id) {
-				// the MySQL getConnection callback is passed the MySQL object and a boolean
-				// success flag
-				
-				if (!$success) {
-					if (Daemon::$debug){
-						Daemon::log('getConnection failed in '.__METHOD__);
-					}
-					return $job->setResult($name, 'Error connecting to MySQL Server');
-				}
-				
-				// execute a query on our sql object
-				$query = "{$app->trans_query}{$msg_id}";
-				$sql->query($query, function($sql, $success) use ($job, $name, $app, $query) {
-					if (!$success) {
-						Daemon::log('Error executing query:'.$app->trans_query.$msg_id);
-						return $job->setResult($name, 'Error with Query! Query:'.$query);
-					}
-					
-					// create a vendor message from the SQL result
-					$db_row = $sql->resultRows;
-					if (is_array($db_row)) {
-						try {
-							// TODO change this for your own needs
-							$app->vendorMessage = new VendorMessage($db_row);
-							
-							// add the message to our queue
-							$app->tq->enqueue($app->vendorMessage);
-
-							// send the data to the remote vendor
-							Daemon::log('About to call Vendor->connect and pass in callback to checkOutboundQueue');
-							$app->connect(function() use ($app){
-								$app->checkOutboundQueue($app);
-							});
-							$job->setResult($name, 'Sent message data');
-						}catch(Exception $ex) {
-							Daemon::log('Caught exception in '.__METHOD__.':'.$ex);
-							$job->setResult($name, 'Data send failed!');
-						}
-							
-					} else {
-						if (Daemon::$debug) {
-							Daemon::log('job returned no result! '.print_r($db_row, true));
-						}
-						$job->setResult($name, 'Unable to create data from database row!');
-					}
-					
-				});
-			
-			});
-		});
-		
-		// run our job to actually connect to MySQL and execute the query
-		$job();
-		
+		$this->createISOandSend($app, null, $msg_id);		
 	}
 	
 	/**
@@ -655,7 +674,7 @@ class Vendor extends AppInstance{
 				// success flag
 				
 				if (!$success) {
-					if (Daemon::$debug){
+					if (self::$debug){
 						Daemon::log('getConnection failed in '.__METHOD__);
 					}
 					return $job->setResult($name, 'Error connecting to MySQL Server');
@@ -669,7 +688,7 @@ class Vendor extends AppInstance{
 				$sql->query($query, function($sql, $success) use ($job, $name, $app, $query) {
 					if (!$success) {
 						Daemon::log('Error executing query:'.$query);
-						return $job->setResult($name, 'Error with Query! Query:'.$query);
+						return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
 					}
 					
 					// if we get here then our query was successful. Nothing left to do
@@ -685,6 +704,92 @@ class Vendor extends AppInstance{
 		$job();
 	}
 	
+	/**
+	 * createJobFromQuery() - execute the given query and store the results in
+	 * the request->job with given name
+	 * @param RealTimeTrans $app - the main appInstance to get the MySQL Conn from
+	 * @param RealTimeTransRequest $req - the HTTP Request we are working with
+	 * @param String $job_name - name of the job to store the results in
+	 * @param String $q - query to execute on the DB
+	 * @param Bool $wake - should we wake our $req when this job completes
+	 * @param Callable $cb - any extra function that should execute when this job completes
+	 * @return null
+	 */
+	public function createJobFromQuery($app, $req, $job_name, $q, $wake, $cb = null){
+		$job = $req->job;
+		Daemon::log('Adding job:'.$job_name);
+		$req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
+			// get our sql connection
+			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
+				if (!$success) {
+					Daemon::log('ERROR getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
+				}
+				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
+					// check if we should log all queries
+					if ($app::$log_queries) {
+						fwrite($app->qfile, $q);
+					}
+					if (!$success) {
+						Daemon::log('ERROR executing query:'.$q.', error:'.$sql->errmsg);
+						return $job->setResult($name, 'ERROR with Query! Query:'.$q.', error:'.$sql->errmsg);
+					} 
+					
+					// create a $result variable. We set it to real values if our query succeeds
+					$result = '';
+					
+					// evaluate whether we have an INSERT or SELECT query
+					// set our $result based on the query type
+					$qtype = substr($q,0,strpos($q, ' '));
+					switch(trim(strtoupper($qtype))){
+						case 'INSERT':
+							Daemon::log(__METHOD__.' using the insertId value for job('.$name.') result!');
+							//Daemon::log(__METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
+							$result = $sql->insertId;
+							break;
+						case 'SELECT':
+							Daemon::log(__METHOD__.' using the resultRows value for job('.$name.') result!');
+							Daemon::log(__METHOD__.' result contains '.count($sql->resultRows). ' entries');
+							//Daemon::log(__METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
+							$result = $sql->resultRows;
+							break;
+						case 'UPDATE':
+							Daemon::log(__METHOD__.' using the affectedRows value for job('.$name.') result!');
+							//Daemon::log(__METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
+							$result = $sql->affectedRows;
+							break;
+						default:
+							Daemon::log('WARNING Unknown query type:'.$qtype);
+							$result = $sql->errmsg;
+					}
+
+					// call any callback and pass it the $result from this job
+					if(is_callable($cb)) {
+						//$job->addListener($cb);
+						//Daemon::log('About to call_user_func() and pass $result:'.print_r($result, true));
+						call_user_func($cb, $result);
+					}
+					
+					// we only set a result for this job if told to wake the request
+					// this prevents the request from waking before all queries have
+					// completed
+					if ($wake) {
+						Daemon::log('Attempting to call $req->wakeup()!');
+						$job->setResult($name, $result);
+						$req->wakeup();
+					}
+				});
+			}); // end of sql->getConnection callback
+			
+			
+			
+		}); // end of job callback
+		
+		//  if not set to wake the request, execute our job immediately
+		if (!$wake){
+			Daemon::log('Executing job('.$job_name.') now!');
+			$job();
+		}
+	}
 	
 	// <editor-fold defaultstate="collapsed" desc="Static Methods">
 	/**
@@ -692,20 +797,16 @@ class Vendor extends AppInstance{
 	 * @param String $data - encrypted data
 	 * @return string - plain text data
 	 */
-	public static function decrypt_data($data)
-	{
-		if (!defined('PRIVATE_KEY')) {
-			define('PRIVATE_KEY','file:///opt/phpdaemon/rsa-1024-priv.key');
-		}
+	public static function decrypt_data($data){
 		$error = array();
 		$error['error_msg'] = '';
 		//Daemon::log('Attempting to decrypt data with length:'.strlen($data));
 		
-		$priv_key = openssl_get_privatekey(PRIVATE_KEY);
+		$priv_key = openssl_get_privatekey(self::PRIVATE_KEY);
 		if (!$priv_key)
 		{
 			// error opening private key
-			$error['error_msg'] = 'Unable to open private key ('.PRIVATE_KEY.')!';
+			$error['error_msg'] = 'Unable to open private key ('.self::PRIVATE_KEY.')!';
 			return $error;
 		}
 
@@ -719,27 +820,17 @@ class Vendor extends AppInstance{
 		$result = openssl_private_decrypt($bdata, $decrypted, $priv_key);
 		if ($result)
 		{
-			$pos = strpos($decrypted, '::::');
+			// the real data is padded with '::::' plus a random string
+			// strip off the extra data and return our plain text
 			//echo "\$pos: $pos\n";
-			$pdata = substr($decrypted, 0, $pos );
-			//Daemon::log('Decryption success! Plain text data length:'.strlen($pdata));
-			if (Vendor::$test_set_only) {
-				// check that this card number is one of the test cards and stop if it is not
-				// this is to ensure we do not send live cards to the test environment
-				if (in_array($pdata, Vendor::$TEST_SET_NUMS)) {
-					return $pdata;
-				} else {
-					$error['error_msg'] = 'Data is not in the test set and $test_set_only is set!';
-					return $error;
-				}
-			} else {
-				return $pdata;
-			}
+			return substr($decrypted, 0, strpos($decrypted, '::::'));
 		}
 		else
 		{
 			//error_log('Error decrypting! $eccnum:'.$eccnum);
-			$error['error_msg'] = 'Error decrypting $eccnum:'.$data;
+			$error['error_msg'] = 'Error decrypting $eccnum:'.$data.
+					", \$decrypted:".$decrypted.", strlen(\$bdata):".
+					strlen($bdata);
 			return $error;
 		}
 	}
@@ -759,6 +850,7 @@ class Vendor extends AppInstance{
 		});
 
 		// add an event handler to reconnect when the connection ends
+		// this also will try a different IP if more than one is defined
 		$conn->addEventHandler('disconnect', function($failed_ip, $failed_port) use ($app) {
 			$app->vendorconn->connected = false;
 
@@ -776,208 +868,8 @@ class Vendor extends AppInstance{
 		// add a handler for when data is sent
 		$conn->addEventHandler('data_sent', function($data_length) use ($app){
 			// this is really just for testing
-			Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
+			//Daemon::log(get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
 		});
-	}
-	
-
-	/**
-	 * Build the query to retrieve the transaction details of the original transaction
-	 * @param ISO8583Trans $msg - the ISO8583 message returned from remote vendor
-	 * @return string
-	 */
-	public static function buildQueryForOriginalTrans($msg, $app) {
-		// build our query to retrieve the original request data from the DB
-		$query = "SELECT fdd.*, fmi.tid AS terminal_id, 
-				fmi.mid AS mercant_id
-			FROM fd_draft_data fdd
-			LEFT JOIN fd_merchant_info fmi ON fmi.id = fdd.merchant_id
-			WHERE receipt_number = '{$msg->receipt_number}' AND tid = '{$msg->terminal_id}'";
-		//Daemon::log('Query for original trans:'.$query);
-		return $query;
-	}
-	
-	/**
-	 * buildQueryForTransUpdate() - Build the queries to update the transaction in the
-	 * database when a response is received
-	 * @param ISO8583Trans $msg - our object returned from the remote vendor
-	 * @param Vendor $app - our Vendor object (extends appInstance)
-	 */
-	public static function buildQueryForTransUpdate($msg, $app) {
-		//daemon::log('$msg:'.print_r($msg, true));
-		$queries = array();
-		// build the main table update query
-		// create our update query
-		$auth_iden_sql = '';
-		if ($msg->dataExistsForBit(38)) {
-			$auth_iden_sql = " auth_iden_response='{$msg->getDataForBit(38)}' ";
-		}
-		$resp_code_sql = '';
-		if ($msg->dataExistsForBit(39)) {
-			$resp_code_sql = " response_code = '{$msg->getDataForBit(39)}' ";
-		}
-		$avs_resp_sql = '';
-		if ($msg->dataExistsForBit(44)){
-			$avs_resp_sql = " avs_response = '{$msg->getDataForBit(44)}' ";
-		}
-		$resp_text_sql = '';
-		if ($msg->dataExistsForTable(22)) {
-			$resp_text_sql = " response_text = '{$msg->getParsedBit63Table22()}' ";
-		}
-		$sql_strings = array($auth_iden_sql, $resp_code_sql, $avs_resp_sql, $resp_text_sql);
-		
-		
-		// form an actual sql string from our data
-		$sql_snippet = '';
-		for($i = 0; $i < count($sql_strings); $i++) {
-			if (strlen($sql_snippet) == 0) {
-				// no SQL in snippet yet
-				$sql_snippet = $sql_strings[$i];
-			} else {
-				$sql_snippet .= ','.$sql_strings[$i];
-			}
-		}
-
-		$query = "UPDATE {$app->config->sqltable->value} SET {$sql_snippet}
-			WHERE id = {$msg->original_trans_id}";
-		$queries[] = $query;
-		
-		// <editor-fold defaultstate="collapsed" desc="Table14 Card Specific Queries">
-		// now create query specific to card type based on table14
-		switch($msg->card_type) {
-			case 'Visa' :
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_visa 
-						(trans_id, aci, issuer_trans_id, 
-						validation_code, mkt_specific_data_ind, rps, 
-						first_auth_amount, total_auth_amount)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['issuer_trans_id']}',
-						'{$tbl14['validation_code']}','{$tbl14['mkt_specific_data_ind']}','{$tbl14['rps']}',
-						'{$tbl14['first_auth_amount']}','{$tbl14['total_auth_amount']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Master Card':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_mc
-						(trans_id, aci, banknet_date,
-						banknet_reference, filler, cvc_error_code,
-						pos_entry_mode_change, trans_edit_code_error, filler2,
-						mkt_specific_data_ind, filler3, total_auth_amount,
-						addtl_mc_settle_date, addtl_banknet_mc_ref)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['banknet_date']}', 
-						'{$tbl14['banknet_reference']}', '{$tbl14['filler']}', '{$tbl14['cvc_error_code']}', 
-						'{$tbl14['pos_entry_mode_change']}', '{$tbl14['trans_edit_code_error']}', '{$tbl14['filler2']}', 
-						'{$tbl14['mkt_specific_data_ind']}', '{$tbl14['filler3']}', '{$tbl14['total_auth_amount']}', 
-						'{$tbl14['addtl_mc_settle_date']}', '{$tbl14['addtl_banknet_mc_ref']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'American Express':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_amex
-						(trans_id, aei, issuer_trans_id,
-						filler, pos_data, filler2,
-						seller_id)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aei']}', '{$tbl14['issuer_trans_id']}', 
-						'{$tbl14['filler']}', '{$tbl14['pos_data']}', '{$tbl14['filler2']}',
-						'{$tbl14['seller_id']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Discover':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_ds
-						(trans_id, di, issuer_trans_id,
-						filler, filler2, total_auth_amount)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['di']}', '{$tbl14['issuer_trans_id']}', 
-						'{$tbl14['filler']}', '{$tbl14['filler2']}', '{$tbl14['total_auth_amount']}')";
-					$queries[] = $query;
-				}
-				break;
-			default:
-				Daemon::log('TODO Write query to update card type:'.$msg->card_type);
-		}
-		//</editor-fold>
-		
-		//<editor-fold defaultstate="collapsed" desc="Card Compliance/Qualification Tables">
-		switch($msg->card_type) {
-			case 'Visa':
-				if ($msg->dataExistsForTable('VI')) {
-					$tblVI = $msg->getParsedBit63TableVI();
-					$query = "INSERT INTO fd_visa_compliance
-						(trans_id, card_level_response_code, source_reason_code,
-						`unknown`)
-						VALUES
-						({$msg->original_trans_id},'{$tblVI['CR']}', '{$tblVI['RS']}',
-						'{$tblVI['UF']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Master Card':
-				if ($msg->dataExistsForTable('MC')) {
-					$tblMC = $msg->getParsedBit63TableMC();
-					$query = "INSERT INTO fd_mastercard_qualification
-						(trans_id, TD_card_data_input_cap, TD_cardholder_auth_cap,
-						TD_card_capture_cap, term_oper_environ, cardholder_present_data,
-						card_present_data, CD_input_mode, cardholder_auth_method,
-						cardholder_auth_entity, card_data_output_cap, term_data_output_cap,
-						pin_capture_cap)
-						VALUES
-						({$msg->original_trans_id}, '{$tblMC['card_data_input_cap']}', '{$tblMC['cardholder_auth_cap']}',
-						'{$tblMC['card_capture_cap']}', '{$tblMC['term_oper_environ']}', '{$tblMC['cardholder_present']}',
-						'{$tblMC['card_present_data']}', '{$tblMC['card_data_input_mode']}', '{$tblMC['cardholder_auth_method']}',
-						'{$tblMC['cardholder_auth_entity']}', '{$tblMC['card_data_output_cap']}', '{$tblMC['terminal_data_out_cap']}',
-						'{$tblMC['pin_capture_cap']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Discover':
-				if ($msg->dataExistsForTable('DS')) {
-					$tblDS = $msg->getParsedBit63TableDS();
-					$query = "INSERT INTO fd_discover_compliance
-						(trans_id, processing_code, sys_trace_audit_num,
-						pos_entry_mode, local_tran_time, local_tran_date,
-						response_code, pos_data, track_data_condition_code,
-						avs_result, nrid)
-						VALUES
-						($msg->original_trans_id, '{$tblDS['processing_code']}', '{$tblDS['sys_trc_audit_num']}', 
-						'{$tblDS['pos_entry_mode']}', '{$tblDS['local_tran_time']}', '{$tblDS['local_tran_date']}', 
-						'{$tblDS['response_code']}', '{$tblDS['pos_data']}', '{$tblDS['trk_data_cond']}', 
-						'{$tblDS['avs']}', '{$tblDS['nrid']}')";
-					$queries[] = $query;
-				}
-				break;
-					
-		}
-		//</editor-fold>
-		return $queries;
-	}
-	
-	/**
-	 * getSubmitDraftSQL() - return the SQL query used to retrieve the batch
-	 * transactions to submit
-	 * @var String (YYYY-MM-DD) - the draft date to pull transactions for
-	 * @return String
-	 */
-	public static function buildSubmitDraftSQL($draft_date) {
-		$query = "SELECT fdd.* 
-							FROM fd_draft_data fdd
-							LEFT JOIN cc_draft_log cdl ON cdl.id = fdd.batch_id
-							WHERE fdd.schedule_date = '{$draft_date}' 
-								AND response_code = ''
-								AND cdl.approve_user <> ''
-								AND cdl.approve_dt <> '0000-00-00 00:00:00'
-								AND cdl.approve_ip_address <> ''";
-		return $query;
 	}
 	
 	/**
@@ -985,8 +877,7 @@ class Vendor extends AppInstance{
 	 * @param Any $var
 	 * @return string
 	 */
-	public static function get_type($var) 
-	{ 
+	public static function get_type($var) { 
 		if(is_object($var)) 
 			return get_class($var); 
 		if(is_null($var)) 

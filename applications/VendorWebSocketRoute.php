@@ -19,7 +19,7 @@ class VendorWebSocketRoute extends WebSocketRoute {
 	 * @return void
 	 */
 	public function onFrame($data, $type) {
-		if (Daemon::$debug) {
+		if ($this->appInstance->$debug) {
 			Daemon::log('data:'.$data.' received from websocket client');
 		}
 		
@@ -27,21 +27,22 @@ class VendorWebSocketRoute extends WebSocketRoute {
 		$client_data = json_decode($data);
 		if (is_object($client_data)) {
 			// we have a good decode
-			if (Daemon::$debug) {
+			if ($this->appInstance->$debug) {
 				Daemon::log('Decoded a JSON object! Object:'.print_r($client_data, true));
 			}
 			// act on our object
 			if ($client_data->command === 'send_trans') {
-				$this->ws = $this;
-				$ws = $this->ws;
-				$this->appInstance->createMessage($client_data->trans_id, $ws);
+				// save this closure in the appInstance so it can return transaction
+				// result to client over ws
+				$this->appInstance->ws = $this;
+				$this->appInstance->createISOandSend($this->appInstance, null, $client_data->trans_id);
 			} else {
 				// unknown command
 				$this->client->sendFrame('Unknown command:'.$client_data->command, 'STRING');
 			}
 		} else {
 			$this->client->sendFrame('Error '.json_last_error().', trying to decode data', 'STRING');
-			if (Daemon::$debug) {
+			if ($this->appInstance->$debug) {
 				Daemon::log('Received object:'.print_r($client_data, true));
 			}		
 		}

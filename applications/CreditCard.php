@@ -5,7 +5,24 @@
  * @author jcrow
  */
 class CreditCard {
+	/**
+	 * The plain text type of this credit card. Possible values are:
+	 * Visa
+	 * Master Card
+	 * JCB
+	 * EnRoute
+	 * Discover
+	 * Carte Blanche
+	 * Diners Club
+	 * American Express
+	 * @var String
+	 */
 	private $card_type = "UNKNOWN";
+	
+	/**
+	 * The credit card number to validate
+	 * @var String
+	 */
 	private $card_no = '';
 	
 	public function __get($name) {
@@ -15,18 +32,36 @@ class CreditCard {
 			throw new Exception("Unknown property: {$name} in class ".get_class($this));
 		}
 	}
+	/**
+	 * CreditCard() - validate the given account number and find the card type
+	 * @param String $card_no - the card number to check
+	 * @throws Exception
+	 */
 	public function __construct($card_no) {
 		$this->card_no = str_replace("-", "", str_replace(" ", "", $card_no));
 		if (strlen($this->card_no) < 14 || !is_numeric($this->card_no)) {
-			throw new Exception("Card number ({$this->card_no})fails minumum checks!");
+			throw new Exception("Card number ({$this->card_no})fails minimum checks!");
 		}
 		$card_type = $this->CreditCardType($this->card_no);
-		if ($card_type !== 'UNKNOWN' && $this->luhn_check($this->card_no)) {
-			$this->card_type = $card_type;
+		if ($card_type !== 'UNKNOWN'){
+			if ($this->luhn_check($this->card_no)) {
+				$this->card_type = $card_type;
+			} else {
+				//echo "Card fails luhn check!\n";
+				throw new Exception("Card fails LUHN check!");
+			}
+			
+		} else {
+			throw new Exception("Unable to determine card type!");
 		}
 	}
 	
-	public function CreditCardType($CardNo) {
+	/**
+	 * CreditCardType() - find the card type for the given card number, or false
+	 * @param String $CardNo - the card number to check
+	 * @return boolean|string
+	 */
+	public function CreditCardType($CardNo, $short_name = false) {
 		/*
 		  '*CARD TYPES            *PREFIX           *WIDTH
 		  'American Express       34, 37            15
@@ -58,7 +93,7 @@ class CreditCard {
 			Case 38:
 				$CreditCardType = "Carte Blanche";
 				break;
-			Case 51: Case 52: Case 53: Case 54: Case 55:
+			Case 51: Case 52: Case 53: Case 54: Case 55: case 56: case 57: case 58:
 				$CreditCardType = "Master Card";
 				break;
 		}
@@ -75,6 +110,7 @@ class CreditCard {
 				Case 6011:
 					$CreditCardType = "Discover";
 					break;
+
 			}
 		}
 
@@ -89,6 +125,9 @@ class CreditCard {
 		if ($CreditCardType == "UNKNOWN") {
 			if (substr($CardNo,0,2) == 65 && strlen($CardNo) == 16) {
 				$CreditCardType = "Discover";
+			} else if(substr($CardNo,0,2) == 62 && strlen($CardNo) == 16) {
+				// China Union Pay; processes as Discover
+				$CreditCardType = 'Discover';
 			}
 		}
 
@@ -102,6 +141,27 @@ class CreditCard {
 					$CreditCardType = "Visa";
 					break;
 			}
+		}
+		if ($short_name) {
+			switch($CreditCardType) {
+				case 'Visa':
+					$CreditCardType = 'VS';
+					break;
+				case 'American Express':
+					$CreditCardType = 'AX';
+					break;
+				case 'Master Card':
+					$CreditCardType = 'MC';
+					break;
+				case 'UNKNOWN':
+					$CreditCardType = 'UK';
+					break;
+				default:
+					$CreditCardType = 'DS';
+			}
+		}
+		if ($CreditCardType === "UNKNOWN") {
+			error_log('CardNo:'.$CardNo.' unable to determine type!');
 		}
 
 		return $CreditCardType;

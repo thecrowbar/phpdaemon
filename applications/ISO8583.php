@@ -90,11 +90,12 @@ class ISO8583 {
         28	=> array('n',	8,		0,	'',		0,	'0'),
         29	=> array('an',	9,		0,	'',		0,	'0'),
         30	=> array('n',	8,		0,	'',		0,	'0'),
+		// bit => array(type, size, variable size, prefix type, prefix length, pad character, padding_modifier
         31	=> array('an',	99,		1,	'bcd',	1,	'0'),
         32	=> array('bcd', 12,		1,	'bcd',	1,	'0'),
         33	=> array('n',	11,		1,	'',		0,	'0'),
         34	=> array('an',	28,		1,	'',		0,	'0'),
-        35	=> array('z',	37,		1,	'bcd',	1,	'0'),
+        35	=> array('bcd',	37,		1,	'bcd',	1,	'0'),
         36	=> array('n',	104,	1,	'',		0,	'0'),
         37	=> array('an',	12,		0,	'',		0,	'0'),
         38	=> array('an',	6,		0,	'',		0,	'0'),
@@ -120,7 +121,8 @@ class ISO8583 {
         57	=> array('ans', 999,	1,	'',		0,	'0'),
         58	=> array('ans', 999,	1,	'',		0,	'0'),
         59	=> array('ans', 9,		1,	'bcd',	1,	'0'),
-        60	=> array('ans', 60,		1,	'',		0,	'0'),
+        60	=> array('bcd', 2,		0,	'',		0,	'0'),
+		// bit => array(type, size, variable size, prefix type, prefix length, pad character, padding_modifier
         61	=> array('ans', 99,		1,	'',		0,	'0'),
         62	=> array('ans', 999,	1,	'',		0,	'0'),
         63	=> array('ans', 999,	1,	'bcd',	2,	'0'),
@@ -304,6 +306,13 @@ class ISO8583 {
 	 * @var String[]
 	 */
     protected $_data	= array();
+	
+	/**
+	 * First 6 bytes of the raw data when importing an ISO
+	 * @var String
+	 */
+	public $data_first_6 = '';
+	
 	/**
 	 * The bitmap for the message. Either Binary or Hex depending on the value
 	 * of $this->bitmap_as_hex
@@ -317,7 +326,15 @@ class ISO8583 {
 	 */
     protected $_mti	= '';
     protected $_iso	= '';
-    protected $_valid	= array();
+	
+	/**
+	 * First 12 binary bytes of the raw iso
+	 * @var String
+	 */
+	public $iso_first_12 = '';
+	
+	protected $_valid	= array();
+	
 	/**
 	 * flag to determine if the MTI value is stored as BCD or HEX
 	 * @default true
@@ -335,6 +352,12 @@ class ISO8583 {
 	 * @var Int
 	 */
 	protected $_bitmapOffset = -1;
+	
+	/**
+	 * Binary string representing the bitmap
+	 * @var String
+	 */
+	public $bitmapString = '';
 	
 	/**
 	 * This is the size of the decoded mesage in bytes
@@ -403,6 +426,11 @@ class ISO8583 {
 	 */
 	public $avs_response = null;
 	
+	/**
+	 * One character response to the presented CVC/CVV2 code
+	 * @var String
+	 */
+	public $cvc_response = null;
 
     // </editor-fold>
     
@@ -412,115 +440,159 @@ class ISO8583 {
        -------------------------------------------------------------- */
     
     //return data element in correct format
-    protected function _packElement($data_element, $data) {
+    protected function _packElement($data_element, $data, $bit = -1) {
         $prefix = "";
         $result	= "";
 
-        //numeric value
-        if ($data_element[0]=='n' && is_numeric($data) && strlen($data)<=$data_element[1]) {
-            $data	= str_replace(".", "", $data);
-            
-            //fix length
-            if ($data_element[2]==0) {
-                // check data length
-                if (strlen($data) > $data_element[1]) {
-                    throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
-                }
-                $result	= sprintf("%0". $data_element[1] ."s", $data);
-            }
-            //dynamic length
-            else {
-                if (strlen($data) <= $data_element[1]) {                
-                    $result	= sprintf("%0". strlen($data_element[1])."d", strlen($data)). $data;
-                } else {
-                    throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
-                }
-            }
-        }
-        
-        // bcd value (Binary Coded Data)
-        if ($data_element[0]=='bcd' && is_numeric($data) && strlen($data)<=$data_element[1]) {
-            // remove all decimal points
-            $data       = str_replace(".", "", $data);
-            $prefix = "";
-            
-            // fixed length value
-            if ($data_element[2]==0) {
-                // extend our number to match the correct length
-                $data = str_pad($data,$data_element[1],"0", STR_PAD_LEFT);
-            } 
-            // dynamic length value, dynamic lengths require BCD prefix
-            else {
-                $prefix = $this->_calculateBCDPrefix($data_element, $data);
-                //echo "\$prefix (hex): ".bin2hex($prefix)." for data of length".strlen($data)."\n";
-                // BCD values must be a multiple of 2 in length. pad on right
-                if (strlen($data)%2 == 1) {
-                    $data .= "0";
-                }
-            }
-            
-            //echo "\$data: {$data}\n";
-                        
-            // create our BCD data value
-            $result = $prefix.$this->convertDEC2BCD($data);
-        }
+		// bit 35 requires special handling
+		if ($bit === 35) {
+			$result = $this->_packBit35Data($data);
+		} else {
+			//numeric value
+			if ($data_element[0]=='n' && is_numeric($data) && strlen($data)<=$data_element[1]) {
+				$data	= str_replace(".", "", $data);
 
-        //alpha value
-        if (($data_element[0]=='a' && ctype_alpha($data) && strlen($data)<=$data_element[1]) ||
-            ($data_element[0]=='an' && ctype_alnum($data) && strlen($data)<=$data_element[1]) ||
-            ($data_element[0]=='z' && strlen($data)<=$data_element[1]) ||
-            ($data_element[0]=='ans' && strlen($data)<=$data_element[1])) {
-
-            //fixed length
-            if ($data_element[2]==0) {
-                // check data length
-                if (strlen($data) > $data_element[1]) {
-                    throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
-                }
-				$ts = sprintf("%". $data_element[5].$data_element[1] ."s", $data);
-                $result	= $ts;
-				//echo __LINE__."\$result: {$result}\n";
-            } 
-            //dynamic length
-            else {
-				// prepend a size prefix, if required
-				$prefix = '';
-				if (array_key_exists(3, $data_element) && strlen($data_element[3]) > 0) {
-					switch($data_element[3]) {
-						case 'bcd':
-							// create our prefix bytes using the size for this data
-							$prefix = $this->_calculateBCDPrefix($data_element, $data);
-							//$prefix = $this->convertDEC2BCD(str_pad(strlen($data),$data_element[4],'0', STR_PAD_LEFT));
-							break;
+				//fix length
+				if ($data_element[2]==0) {
+					// check data length
+					if (strlen($data) > $data_element[1]) {
+						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
+					}
+					$result	= sprintf("%0". $data_element[1] ."s", $data);
+				}
+				//dynamic length
+				else {
+					if (strlen($data) <= $data_element[1]) {                
+						$result	= sprintf("%0". strlen($data_element[1])."d", strlen($data)). $data;
+					} else {
+						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
 					}
 				}
-                if (strlen($prefix.$data) <= ($data_element[1]+$data_element[4])) {
-                    //$result	= $prefix . sprintf("%0". strlen($data_element[1])."s", strlen($prefix.$data)). $data;
-					// This should pad the value out to the proper length
-					// an => left pad with zero
-					// ans => right pad with space
-					$result = $prefix.$data;
-                } else {
-                    throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
-                }
-            }
-        }
+			}
 
-        //bit value
-        if ($data_element[0]=='b' && strlen($data)<=$data_element[1]) {
-            //fix length
-            if ($data_element[2]==0) {
-                $tmp	= sprintf("%0". $data_element[1] ."d", $data);
+			// bcd value (Binary Coded Data)
+			if ($data_element[0]=='bcd' && is_numeric($data) && strlen($data)<=$data_element[1]) {
+				// remove all decimal points
+				$data       = str_replace(".", "", $data);
+				$prefix = "";
 
-                while ($tmp!='') {
-                    $result	.= base_convert(substr($tmp, 0, 4), 2, 16);
-                    $tmp	= substr($tmp, 4, strlen($tmp)-4);
-                }
-            }
-        }
+				// fixed length value
+				if ($data_element[2]==0) {
+					// extend our number to match the correct length
+					$data = str_pad($data,$data_element[1],"0", STR_PAD_LEFT);
+				} 
+				// dynamic length value, dynamic lengths require BCD prefix
+				else {
+					$prefix = $this->_calculateBCDPrefix($data_element, $data);
+					//echo "\$prefix (hex): ".bin2hex($prefix)." for data of length".strlen($data)."\n";
+					// BCD values must be a multiple of 2 in length. pad on right
+					if (strlen($data)%2 == 1) {
+						$data .= "0";
+					}
+				}
+
+				//echo "\$data: {$data}\n";
+
+				// create our BCD data value
+				$result = $prefix.$this->convertDEC2BCD($data);
+			}
+
+			//alpha value
+			if (($data_element[0]=='a' && ctype_alpha($data) && strlen($data)<=$data_element[1]) ||
+				($data_element[0]=='an' && ctype_alnum($data) && strlen($data)<=$data_element[1]) ||
+				($data_element[0]=='z' && strlen($data)<=$data_element[1]) ||
+				($data_element[0]=='ans' && strlen($data)<=$data_element[1])) {
+
+				//fixed length
+				if ($data_element[2]==0) {
+					// check data length
+					if (strlen($data) > $data_element[1]) {
+						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
+					}
+					$ts = sprintf("%". $data_element[5].$data_element[1] ."s", $data);
+					$result	= $ts;
+					//echo __LINE__."\$result: {$result}\n";
+				} 
+				//dynamic length
+				else {
+					// prepend a size prefix, if required
+					$prefix = '';
+					if (array_key_exists(3, $data_element) && strlen($data_element[3]) > 0) {
+						switch($data_element[3]) {
+							case 'bcd':
+								// create our prefix bytes using the size for this data
+								$prefix = $this->_calculateBCDPrefix($data_element, $data);
+								//$prefix = $this->convertDEC2BCD(str_pad(strlen($data),$data_element[4],'0', STR_PAD_LEFT));
+								break;
+						}
+					}
+					if (strlen($prefix.$data) <= ($data_element[1]+$data_element[4])) {
+						//$result	= $prefix . sprintf("%0". strlen($data_element[1])."s", strlen($prefix.$data)). $data;
+						// This should pad the value out to the proper length
+						// an => left pad with zero
+						// ans => right pad with space
+						$result = $prefix.$data;
+					} else {
+						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
+					}
+				}
+			}
+
+			//bit value
+			if ($data_element[0]=='b' && strlen($data)<=$data_element[1]) {
+				//fix length
+				if ($data_element[2]==0) {
+					$tmp	= sprintf("%0". $data_element[1] ."d", $data);
+
+					while ($tmp!='') {
+						$result	.= base_convert(substr($tmp, 0, 4), 2, 16);
+						$tmp	= substr($tmp, 4, strlen($tmp)-4);
+					}
+				}
+			}
+		}
 
         return $result;
     }
+	
+	private function _packBit35Data($d) {
+		// split on our = 
+		$da = explode('=', $d);
+		if (count($da) !== 2) {
+			throw new Exception('Bit35 Data not valid data:'.$d);
+		}
+		/**
+		 * Array of 4 bit strings representing each character in the data
+		 * @var String[] 
+		 */
+		$bs = array();
+		// loop over the first part of our data and convert to 4 bit string
+		for($i = 0, $stop = strlen($da[0]); $i < $stop; $i++) {
+			$bs[] = str_pad(decbin($da[0][$i]), 4, '0', STR_PAD_LEFT);
+		}
+		// add our special 1101 bit string (represents 0xd, or "=")
+		$bs[] = '1101';
+		// loop over the rest of our data and add it
+		for($i = 0, $stop = strlen($da[1]); $i < $stop; $i++) {
+			$bs[] = str_pad(decbin($da[1][$i]), 4, '0', STR_PAD_LEFT);
+		}
+		/* This is how many bytes of data should be in the decoded value. BCD packed is half this size */
+		$data_len = count($bs);
+		// make sure we have an even number of 1/2 byte values
+		if (count($bs)%2) {
+			$bs[] = '0000';
+		}
+		// convert our 1/2 byte binary strings into bytes
+		$return = "";
+		for($i = 0, $stop = count($bs); $i < $stop; $i+=2) {
+			$return .= pack('C', bindec($bs[$i].$bs[$i+1]));
+		}
+//		Daemon::log('$bs[]:'.print_r($bs, true));
+//		Daemon::log('$da[]:'.print_r($da, true));
+//		Daemon::log("Creating BCD prefix for data of length:".strlen($return));
+		$prefix = $this->_calculateBCDPrefix($this->DATA_ELEMENT[35], $d);
+		return $prefix.$return;
+	}
     
     /**
      * _calculateBCDPrefix() - create a BCD prefix for variable length data elements
@@ -701,6 +773,8 @@ class ISO8583 {
 			
 		}
 		
+		$this->bitmapString = $bitmapString;
+		
         $this->_bitmap	= $tmp;
 		$this->_msg_size += strlen($this->_bitmap);
         return $tmp;
@@ -710,6 +784,7 @@ class ISO8583 {
     protected function _parseData() {
 		// get a string of just our data element
 		$data = substr($this->_iso,($this->_bitmapOffset+strlen($this->_bitmap)));
+		$this->data_first_6 = substr($data,0,6);
 		// loop over our bitmap and find the offsets for each data element
 		$lastOffset = $this->_bitmapOffset+strlen($this->_bitmap);
 		$lastSize = 0;
@@ -931,6 +1006,40 @@ class ISO8583 {
         }
         return $byteString;
     }
+	/**
+	 * Special ASCII to BCD function for bit 35 data (track 2 data)
+	 * @param String $d - PAN+"D"+EXP+DisData
+	 * @return String 
+	 * @throws Exception
+	 */
+	public function convertBit35DataToBCD($d) {
+		// split the string on ASCII "D" (stand in for hex 0xD, dec 13)
+		$bitString = '';
+		$byteString = '';
+		$s = explode('D', $d);
+		if (count($s) !== 2) {
+			throw new Exception('Incorrect values passed for bit 35');
+		}
+		
+		// the needs to be packed into a decimal string
+		// loop over our PAN and create the bitString
+		for($i=0; $i<strlen($s[0]); $i++) {
+			$bitString .= str_pad(decbin($s[0][$j]), 4, 0, STR_PAD_LEFT);
+		}
+		// add our 0xD 1/2 bit
+		$bitString .= '1101';
+		// add the rest of our bit 35 data
+		for($i=0; $i<strlen($s[1]); $i++) {
+			$bitString .= str_pad(decbin($s[1][$j]), 4, 0, STR_PAD_LEFT);
+		}
+		
+		// convert each 8 bit value into a byte
+		for ($j=0; $j < strlen($bitString); $j+=8) {
+			$byteString .= pack('C', dindec(substr($bitString,$j, 8)));
+		}
+		
+		return $byteString;
+	}
     // </editor-fold>
     
     // <editor-fold defaultstate="collpased" desc="Class Public Methods">
@@ -941,7 +1050,7 @@ class ISO8583 {
     //method: add data element
     public function addData($bit, $data) {
         if ($bit>1 && $bit<129) {
-            $this->_data[$bit]	= $this->_packElement($this->DATA_ELEMENT[$bit], $data);
+            $this->_data[$bit]	= $this->_packElement($this->DATA_ELEMENT[$bit], $data, $bit);
             ksort($this->_data);
             $this->_calculateBitmap();
         }
@@ -1131,18 +1240,25 @@ class ISO8583 {
 			// parse our bit63 data if present
 			if ($this->_data[63] != '?' && method_exists($this, '_parseBit63Data')) {
 				$this->_parseBit63Data();
+				// set our CVV2/CVC response if available
+				if (strlen($this->getParsedBit63Table49()) > 0) {
+					$this->cvc_response = $this->getParsedBit63Table49();
+				}
 			}
 			
-			// determine our card type
-			if ($this->mti_use_bcd) {
-				if ($this->_mti == "\x01\x00") {
-					$this->card_type = CreditCardType($this->_data[2]);
-				}
-			} else {
-				if ($this->_mti == '0100') {
-					$this->card_type = CreditCardType($this->_data[2]);
+			
+			
+			// set our PAN
+			if($this->dataExistsForBit(2)){
+				if(!is_object($this->credit_card)){
+					$this->credit_card = new CreditCard(bin2hex($this->getDataForBit(2)));
 				}
 			}
+			// determine our card type for 0100 messages
+			if ($this->_mti == "\x01\x00" || $this->_mti == '0100') {
+				$this->card_type = $this->credit_card->CreditCardType($this->_data[2]);
+			}
+
 			
         }
     }
@@ -1176,7 +1292,8 @@ class ISO8583 {
 		}
 		
 		// try to parse our message
-		$this->addISO(substr($msg,strlen(self::TCP_MESSAGE_PREFIX)+2,$size));
+		$this->_iso = substr($msg,strlen(self::TCP_MESSAGE_PREFIX)+2,$size);
+		$this->addISO($this->_iso);
 		
 	}
     
@@ -1213,7 +1330,14 @@ class ISO8583 {
 					// the _data map has not yet been populated with values
 					$text .= "[{$bit}] {$desc}:{$val}{$ls}";
 				} else {
-					$text .= "[{$bit}] {$desc}:".$this->convertBCDByte2DEC($val).$ls;
+					if ($bit === 35) {
+						// this is for the special Bit35 bcd value
+						// it contains HEX 0xd which is not valid BCD
+						$ta = explode('d', bin2hex($val));
+						$text .= "[{$bit}] {$desc}:".join('=', $ta).$ls;
+					} else {
+						$text .= "[{$bit}] {$desc}:".$this->convertBCDByte2DEC($val).$ls;
+					}
 				}
 				
 			} else {
