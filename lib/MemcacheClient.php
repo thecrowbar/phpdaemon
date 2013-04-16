@@ -6,7 +6,7 @@
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
-// @todo: Binary protocol
+// @TODO: Binary protocol support
 class MemcacheClient extends NetworkClient {
 	/**
 	 * Setting default config options
@@ -14,12 +14,25 @@ class MemcacheClient extends NetworkClient {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
-			// @todo add description strings
-			'servers'               =>  '127.0.0.1',
+		return [
+			/**
+			 * Default servers
+			 * @var string|array
+			 */
+			'servers'               =>  'tcp://127.0.0.1',
+
+			/**
+			 * Default port
+			 * @var integer
+			 */
 			'port'					=> 11211,
+
+			/**
+			 * Maximum connections per server
+			 * @var integer
+			 */
 			'maxconnperserv'		=> 32
-		);
+		];
 	}
 
 	/**
@@ -29,13 +42,6 @@ class MemcacheClient extends NetworkClient {
 	 * @return void
 	 */
 	public function get($key, $onResponse) {
-		if (
-			!is_string($key) 
-			|| !strlen($key)
-		) {
-			return;
-		}
-
 		$this->requestByKey($key, 'get ' . $this->prefix . $key . "\r\n", $onResponse);
 	}
 
@@ -47,31 +53,19 @@ class MemcacheClient extends NetworkClient {
 	 * @param mixed Callback called when the request complete
 	 * @return void
 	 */
-	public function set($key, $value, $exp = 0, $onResponse = NULL) {
-		if (
-			!is_string($key) 
-			|| !strlen($key)
-		) {
-			return;
-		}
-
-		$conn = $this->getConnectionByKey($key);
-		if (!$conn) {
-			return;
-		}
-
-		if ($onResponse !== NULL) {
-			$conn->onResponse->push($onResponse);
-			$conn->checkFree();
-		}
-
-		$flags = 0;
-
-		$conn->write('set ' . $this->prefix . $key . ' ' . $flags . ' ' . $exp . ' ' 
-			. strlen($value) . ($onResponse === NULL ? ' noreply' : '') . "\r\n"
-		);
-		$conn->write($value);
-		$conn->write("\r\n");
+	public function set($key, $value, $exp = 0, $onResponse = null) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $value, $exp, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->checkFree();
+			}
+			$conn->writeln('set ' . $this->prefix . $key . ' 0 ' . $exp . ' ' 
+				. strlen($value) . ($onResponse === null ? ' noreply' : '') . "\r\n" . $value
+			);
+		});
 	}
 
 	/**
@@ -82,30 +76,18 @@ class MemcacheClient extends NetworkClient {
 	 * @param mixed Callback called when the request complete
 	 * @return void
 	 */
-	public function add($key, $value, $exp = 0, $onResponse = NULL) {
-		if (
-			!is_string($key) 
-			|| !strlen($key)
-		) {
-			return;
-		}
-
-		$conn = $this->getConnectionByKey($key);
-		if (!$conn) {
-			return false;
-		}
-
-		if ($onResponse !== NULL) {
-			$conn->onResponse->push($onResponse);
-			$conn->checkFree();
-		}
-
-		$flags = 0;
-
-		$conn->write('add ' . $this->prefix . $key . ' ' . $flags . ' ' . $exp . ' ' . strlen($value) 
-			. ($onResponse === null ? ' noreply' : '') . "\r\n");
-		$conn->write($value);
-		$conn->write("\r\n");
+	public function add($key, $value, $exp = 0, $onResponse = null) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $value, $exp, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->checkFree();
+			}
+			$conn->writeln('add ' . $this->prefix . $key . ' 0 ' . $exp . ' ' . strlen($value) 
+				. ($onResponse === null ? ' noreply' : '') . "\r\n" . $value);
+		});
 	}
 
 	/**
@@ -115,23 +97,17 @@ class MemcacheClient extends NetworkClient {
 	 * @param integer Time to block this key
 	 * @return void
 	 */
-	public function delete($key, $onResponse = NULL, $time = 0) {
-		if (
-			!is_string($key) 
-			|| !strlen($key)
-		) {
-			return;
-		}
-
-		$conn = $this->getConnectionByKey($key);
-		if (!$conn) {
-			return false;
-		}
-
-		$conn->onResponse->push($onResponse);
-		$conn->checkFree();
-
-		$conn->write('delete ' . $this->prefix . $key . ' ' . $time . "\r\n");
+	public function delete($key, $onResponse = null, $time = 0) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $time, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->checkFree();
+			}
+			$conn->writeln('delete ' . $this->prefix . $key . ' ' . $time);
+		});
 	}
 
 	/**
@@ -142,24 +118,18 @@ class MemcacheClient extends NetworkClient {
 	 * @param mixed Callback called when the request complete
 	 * @return void
 	 */
-	public function replace($key, $value, $exp = 0, $onResponse = NULL) {
-		$conn = $this->getConnectionByKey($key);
-
-		if (!$conn) {
-			return false;
-		}
-
-		if ($onResponse !== NULL) {
-			$conn->onResponse->push($onResponse);
-			$conn->setFree(false);
-		}
-
-		$flags = 0;
-
-		$conn->write('replace ' . $this->prefix . $key . ' ' . $flags . ' ' . $exp . ' ' . strlen($value) 
-			. ($onResponse === NULL ? ' noreply' : '') . "\r\n");
-		$conn->write($value);
-		$conn->write("\r\n");
+	public function replace($key, $value, $exp = 0, $onResponse = null) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $value, $exp, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->checkFree();
+			}
+			$conn->writeln('replace ' . $this->prefix . $key . ' 0 ' . $exp . ' ' . strlen($value) 
+				. ($onResponse === null ? ' noreply' : '') . "\r\n" . $value);
+		});
 	}
 
 	/**
@@ -170,24 +140,18 @@ class MemcacheClient extends NetworkClient {
 	 * @param mixed Callback called when the request complete
 	 * @return void
 	 */
-	public function append($key, $value, $exp = 0, $onResponse = NULL) {
-		$conn = $this->getConnectionByKey($key);
-		
-		if (!$conn) {
-			return false;
-		}
-
-		if ($onResponse !== NULL) {
-			$conn->onResponse->push($onResponse);
-			$conn->setFree(false);
-		}
-
-		$flags = 0;
-
-		$conn->write('append ' . $this->prefix . $key . ' ' . $flags . ' ' . $exp . ' ' . strlen($value) 
-			. ($onResponse === NULL ? ' noreply' : '') . "\r\n");
-		$conn->write($value);
-		$conn->write("\r\n");
+	public function append($key, $value, $exp = 0, $onResponse = null) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $value, $exp, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->checkFree();
+			}
+			$conn->writeln('replace ' . $this->prefix . $key . ' 0 ' . $exp . ' ' . strlen($value) 
+				. ($onResponse === null ? ' noreply' : '') . "\r\n" . $value);
+		});
 	}
 
 	/**
@@ -198,24 +162,18 @@ class MemcacheClient extends NetworkClient {
 	 * @param mixed Callback called when the request complete
 	 * @return void
 	 */
-	public function prepend($key, $value, $exp = 0, $onResponse = NULL) {
-		$conn = $this->getConnectionByKey($key);
-
-		if (!$conn) {
-			return false;
-		}
-
-		if ($onResponse !== NULL) {
-			$conn->onResponse->push($onResponse);
-			$conn->setFree(false);
-		}
-
-		$flags = 0;
-
-		$conn->write('prepend ' . $this->prefix . $key . ' ' . $flags . ' ' . $exp . ' ' . strlen($value) 
-			. ($onResponse === NULL ? ' noreply' : '') . "\r\n");
-		$conn->write($value);
-		$conn->write("\r\n");
+	public function prepend($key, $value, $exp = 0, $onResponse = null) {
+		$this->getConnectionByKey($key, function ($conn) use ($key, $value, $exp, $onResponse) {
+			if (!$conn->connected) {
+				return;
+			}
+			if ($onResponse !== null) {
+				$conn->onResponse->push($onResponse);
+				$conn->setFree(false);
+			}
+			$conn->writeln('prepend ' . $this->prefix . $key . ' 0 ' . $exp . ' ' . strlen($value) 
+				. ($onResponse === null ? ' noreply' : '') . "\r\n" . $value);
+		});
 	}
 
 	/**
@@ -227,91 +185,4 @@ class MemcacheClient extends NetworkClient {
 	public function stats($onResponse, $server = NULL) {
 		$this->requestByServer($server, 'stats' . "\r\n", $onResponse);
 	}
-}
-
-class MemcacheClientConnection extends NetworkClientConnection {
-
-	public $result;                // current result
-	public $valueFlags;            // flags of incoming value
-	public $valueLength;           // length of incoming value
-	public $valueSize = 0;         // size of received part of the value
-	public $error;                 // error message
-	public $key;                   // current incoming key
-	const STATE_DATA = 1;
-
-	/**
-	 * Called when new data received
-	 * @param string New data
-	 * @return void
-	*/
-	public function stdin($buf) {
-		$this->buf .= $buf;
-
-		start:
-
-		if ($this->state === self::STATE_ROOT) {
-			while (($l = $this->gets()) !== FALSE) {
-				$e = explode(' ', rtrim($l, "\r\n"));
-
-				if ($e[0] == 'VALUE') {
-					$this->key = $e[1];
-					$this->valueFlags = $e[2];
-					$this->valueLength = $e[3];
-					$this->result = '';
-					$this->state = self::STATE_DATA;
-					break;
-				}
-				elseif ($e[0] == 'STAT') {
-					if ($this->result === NULL) {
-						$this->result = array();
-					}
-
-					$this->result[$e[1]] = $e[2];
-				}
-				elseif (
-					($e[0] === 'STORED') 
-					|| ($e[0] === 'END') 
-					|| ($e[0] === 'DELETED') 
-					|| ($e[0] === 'ERROR') 
-					|| ($e[0] === 'CLIENT_ERROR') 
-					|| ($e[0] === 'SERVER_ERROR')
-				) {
-					if ($e[0] !== 'END') {
-						$this->result = FALSE;
-						$this->error = isset($e[1]) ? $e[1] : NULL;
-					}
-
-					$this->onResponse->executeOne($this);
-					$this->checkFree();
-
-					$this->valueSize = 0;
-					$this->result = NULL;
-				}
-			}
-		}
-
-		if ($this->state === self::STATE_DATA) {
-			if ($this->valueSize < $this->valueLength) {
-				$n = $this->valueLength-$this->valueSize;
-				$buflen = strlen($this->buf);
-
-				if ($buflen > $n) {
-					$this->result .= binarySubstr($this->buf, 0, $n);
-					$this->buf = binarySubstr($this->buf, $n);
-				} else {
-					$this->result .= $this->buf;
-					$n = $buflen;
-					$this->buf = '';
-				}
-
-				$this->valueSize += $n;
-
-				if ($this->valueSize >= $this->valueLength) {
-					$this->state = self::STATE_ROOT;
-					goto start;
-				}
-			}
-		}
-	}
-	
 }

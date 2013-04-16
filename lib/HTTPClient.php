@@ -12,52 +12,57 @@ class HTTPClient extends NetworkClient {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
-			// @todo add description strings
+		return [
+			/**
+			 * Default port
+			 * @var integer
+			 */
 			'port' => 80,
+
+			/**
+			 * Default SSL port
+			 * @var integer
+			 */
+			'sslport' => 443,
+
+			/**
+			 * Send User-Agent header?
+			 * @var boolean
+			 */
 			'expose' => 1,
-		);
+		];
 	}
 
 	public function get($url, $params) {
 		if (is_callable($params)) {
-			$params = array('resultcb' => $params);
+			$params = ['resultcb' => $params];
 		}
 		if (!isset($params['uri']) || !isset($params['host'])) {
-			list ($params['host'], $params['uri'], $params['port']) = HTTPClient::prepareUrl($url);
+			list ($params['scheme'], $params['host'], $params['uri'], $params['port']) = self::prepareUrl($url);
 		}
+		$ssl = $params['scheme'] === 'https';
 		$this->getConnection(
-			$addr = $params['host'] . (isset($params['port']) ? $params['port'] : null),
-			function($conn) use ($url, $params) {
-				$conn->get($url, $params);
+			'tcp://' . $params['host'] . (isset($params['port']) ? ':' . $params['port'] : null) . ($ssl ? '#ssl' : ''),
+			function($conn) use ($url, $data, $params) {
+				$conn->get($url, $data, $params);
 			}
 		);
 	}
 
-	public function post($url, $data = array(), $params) {
+	public function post($url, $data = [], $params) {
 		if (is_callable($params)) {
-			$params = array('resultcb' => $params);
+			$params = ['resultcb' => $params];
 		}
 		if (!isset($params['uri']) || !isset($params['host'])) {
-			list ($params['host'], $params['uri'], $params['port']) = HTTPClient::prepareUrl($url);
+			list ($params['scheme'], $params['host'], $params['uri'], $params['port']) = self::prepareUrl($url);
 		}
+		$ssl = $params['scheme'] === 'https';
 		$this->getConnection(
-			$addr = $params['host'] . (isset($params['port']) ? $params['port'] : null),
+			'tcp://' . $params['host'] . (isset($params['port']) ? ':' . $params['port'] : null) . ($ssl ? '#ssl' : ''),
 			function($conn) use ($url, $data, $params) {
 				$conn->post($url, $data, $params);
 			}
 		);
-	}
-
-	protected function customRequestHeaders($headers) {
- 		foreach ($headers as $item) {
- 			if (is_string($item)) {
- 				$this->writeln($item);
- 			}
- 			elseif (is_array($item)) {
-				$this->writeln($item[0].': '.$item[1]); // @TODO: prevent injections
-			}
-		}
 	}
 
 
@@ -67,7 +72,7 @@ class HTTPClient extends NetworkClient {
 		}
 		elseif (is_array($mixed)) {
 			$url = '';
-			$buf = array();
+			$buf = [];
 			$queryDelimiter = '?';
 			$mixed[] = '';
 			foreach ($mixed as $k => $v) {
@@ -94,26 +99,27 @@ class HTTPClient extends NetworkClient {
 				$uri .= '?'.$u['query'];
 			}
 		}
-		return array($u['host'], $uri, isset($u['port']) ? $u['port'] : null);
+		return [$u['scheme'], $u['host'], $uri, isset($u['port']) ? $u['port'] : null];
 	}
 }
 class HTTPClientConnection extends NetworkClientConnection {
 
 	const STATE_HEADERS = 1;
 	const STATE_BODY = 2;
-	public $headers = array();
+	public $headers = [];
 	public $contentLength = -1;
 	public $body = '';
-	public $EOL = "\r\n";
-	public $cookie = array();
+	protected $EOL = "\r\n";
+	public $cookie = [];
 	public $keepalive = false;
 	public $curChunkSize;
 	public $curChunk;
 	public $chunked = false;
 	public $protocolError;
+	
 	public function get($url, $params = null) {
 		if (!is_array($params)) {
-			$params = array('resultcb' => $params);
+			$params = ['resultcb' => $params];
 		}
 		if (!isset($params['uri']) || !isset($params['host'])) {
 			$prepared = HTTPClient::prepareUrl($url);
@@ -140,15 +146,31 @@ class HTTPClientConnection extends NetworkClientConnection {
 			$this->customRequestHeaders($params['headers']);
 		}
 		$this->writeln('');
-		$this->headers = array();
+		$this->headers = [];
 		$this->body = '';
 		$this->onResponse->push($params['resultcb']);
 		$this->checkFree();
 	}
 
-	public function post($url, $data = array(), $params = null) {
+	protected function customRequestHeaders($headers) {
+		foreach ($headers as $key => $item) {
+			if (is_numeric($key)) {
+				if (is_string($item)) {
+                    $this->writeln($item);
+                }
+				elseif (is_array($item)) {
+					$this->writeln($item[0].': '.$item[1]); // @TODO: prevent injections?
+				}
+			}
+			else {
+				$this->writeln($key.': '.$item);
+			}
+		}
+	}
+
+	public function post($url, $data = [], $params = null) {
 		if (!is_array($params)) {
-			$params = array('resultcb' => $params);
+			$params = ['resultcb' => $params];
 		}
 		if (!isset($params['uri']) || !isset($params['host'])) {
 			$prepared = HTTPClient::prepareUrl($url);
@@ -174,9 +196,8 @@ class HTTPClientConnection extends NetworkClientConnection {
 		if (isset($params['cookie']) && sizeof($params['cookie'])) {
 			$this->writeln('Cookie: '.http_build_query($this->cookie, '', '; '));
 		}
-		$body = '';
-		foreach ($data as $k => $v) {
-			if (is_object($v) && $v instanceof HTTPClientUpload) {
+		foreach ($data as $val) {
+			if (is_object($val) && $val instanceof HTTPClientUpload) {
 				$params['contentType'] = 'multipart/form-data';
 			}
 		}
@@ -188,7 +209,7 @@ class HTTPClientConnection extends NetworkClientConnection {
 		}
 		$this->writeln('');
 		$this->write($body);
-		$this->headers = array();
+		$this->headers = [];
 		$this->body = '';
 		$this->onResponse->push($params['resultcb']);
 		$this->checkFree();
@@ -317,7 +338,7 @@ class HTTPClientConnection extends NetworkClientConnection {
 		$this->contentLength = -1;
 		$this->curChunkSize = null;
 		$this->chunked = false;
-		$this->headers = array();
+		$this->headers = [];
 		$this->body = '';
 		if (!$this->keepalive) {
 			$this->finish();
@@ -345,4 +366,3 @@ class HTTPClientUpload {
 		return $this;
 	}
 }
-

@@ -9,15 +9,15 @@
  */
 class NetworkClient extends ConnectionPool {
 	
-	public $servers = array();      // Array of servers 
-	public $dtags_enabled = false;   // Enables tags for distribution
-	public $servConn = array();      // Active connections
-	public $servConnFree = array();
-	public $prefix = '';             // Prefix for all keys
-	public $maxConnPerServ = 32;
-	public $acquireOnGet = false;
-	public $noSAF = false;
-	public $pending = array();
+	protected $servers = array();      // Array of servers 
+	protected $dtags_enabled = false;   // Enables tags for distribution
+	protected $servConn = [];      // Active connections
+	protected $servConnFree = [];
+	protected $prefix = '';             // Prefix for all keys
+	protected $maxConnPerServ = 32;
+	protected $acquireOnGet = false;
+	protected $noSAF = false;
+	protected $pending = [];
 	
 	/**
 	 * Setting default config options
@@ -25,16 +25,38 @@ class NetworkClient extends ConnectionPool {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
-			// @todo add description strings
+		return [
+			/**
+			 * Expose?
+			 * @var boolean
+			 */
 			'expose'                => 1,
+
+			/**
+			 * Default servers
+			 * @var string|array
+			 */
 			'servers'               =>  '127.0.0.1',
+
+			/**
+			 * Default server
+			 * @var string
+			 */
 			'server'               =>  '127.0.0.1',
+
+			/**
+			 * Maximum connections per server
+			 * @var integer
+			 */
 			'maxconnperserv'		=> 32
-		);
+		];
 	}
 
-	public function applyConfig() {
+	/**
+	 * Applies config
+	 * @return void
+	 */
+	protected function applyConfig() {
 		parent::applyConfig();
 		if (isset($this->config->servers)) {
 			$servers = array_filter(array_map('trim',explode(',', $this->config->servers->value)), 'strlen');
@@ -111,22 +133,74 @@ class NetworkClient extends ConnectionPool {
 		}
 		$conn = $this->connect($url, $cb);
 
-		if (!$conn || $conn->finished) {
+		if (!$conn || $conn->isFinished()) {
 			return false;
 		}
 		$this->servConn[$url]->attach($conn);
 		return true;
 	}
 
-	public function detachConn($conn) {
-		parent::detachConn($conn);
-		$this->touchPending($conn->url);
+	/**
+	 * Detach Connection
+	 * @param Connection
+	 * @param [mixed Info]
+	 * @return void
+	 */
+	public function detach($conn) {
+		parent::detach($conn);
+		$this->touchPending($conn->getUrl());
 	}
 
+	/**
+	 * Mark connection as free
+	 * @param Connection
+	 * @param URL
+	 * @return void
+	 */
+	public function markConnFree(NetworkClientConnection $conn, $url) {
+		if (!isset($this->servConnFree[$url])) {
+			return;
+		}
+		$this->servConnFree[$url]->attach($conn);
+	}
+
+
+	/**
+	 * Mark connection as busy
+	 * @param Connection
+	 * @param URL
+	 * @return void
+	 */
+	public function markConnBusy(NetworkClientConnection $conn, $url) {
+		if (!isset($this->servConnFree[$url])) {
+			return;
+		}
+		$this->servConnFree[$url]->detach($conn);
+	}
+
+	/**
+	 * Detaches connection from URL
+	 * @param Connection
+	 * @param URL
+	 * @return void
+	 */
+	public function detachConnFromUrl(NetworkClientConnection $conn, $url) {
+		if (!isset($this->servConnFree[$url]) || !isset($this->servConn[$url]))	 {
+			return;
+		}
+		$this->servConnFree[$url]->detach($conn);
+		$this->servConn[$url]->detach($conn);
+	}
+
+
+	/**
+	 * Touch pending "requests for connection"
+	 * @param URL
+	 * @return void
+	 */
 	public function touchPending($url) {
 		while (isset($this->pending[$url]) && !$this->pending[$url]->isEmpty()) {
-			$r = $this->getConnection($url, $this->pending[$url]->dequeue());
-			if ($r === true) {
+			if (true === $this->getConnection($url, $this->pending[$url]->dequeue())) {
 				return;
 			}
 		}
@@ -138,6 +212,9 @@ class NetworkClient extends ConnectionPool {
 	 * @return boolean Success.
 	 */
 	public function getConnectionByKey($key, $cb = null) {
+		if (is_object($key)) {
+			return $key->onConnected($cb);
+		}
 		if (
 			($this->dtags_enabled) 
 			&& (($sp = strpos($key, '[')) !== FALSE) 
@@ -167,14 +244,14 @@ class NetworkClient extends ConnectionPool {
 			$server = array_rand($this->servers);
 		}
 		$this->getConnection($server, function ($conn) use ($data, $onResponse) {
-			if (!$conn->connected) {
+			if (!$conn->isConnected()) {
 				return;
 			}
 			if ($onResponse !== null) {
-				$conn->onResponse->push($onResponse);
+				$conn->onResponse($onResponse);
 				$conn->setFree(false);
 			} elseif ($conn->noSAF) {
-				$conn->onResponse->push(null);
+				$conn->onResponse(null);
 			}
 			$conn->write($data);
 		});
@@ -190,14 +267,14 @@ class NetworkClient extends ConnectionPool {
 	 */
 	public function requestByKey($key, $data, $onResponse = null) {
 		 $this->getConnectionByKey($key, function ($conn) use ($data, $onResponse) {
-		 	if (!$conn->connected) {
+		 	if (!$conn->isConnected()) {
 				return;
 			}
 			if ($onResponse !== NULL) {
-				$conn->onResponse->push($onResponse);
+				$conn->onResponse($onResponse);
 				$conn->setFree(false);
 			} elseif ($conn->noSAF) {
-				$conn->onResponse->push(null);
+				$conn->onResponse(null);
 			}
 			$conn->write($data);
 		 });

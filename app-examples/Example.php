@@ -39,7 +39,7 @@ class Example extends AppInstance {
 	 * Called when application instance is going to shutdown.
 	 * @return boolean Ready to shutdown?
 	 */
-	public function onShutdown() {
+	public function onShutdown($graceful = false) {
 		// Finalization.
 		return TRUE;
 	}
@@ -61,8 +61,11 @@ class ExampleRequest extends HTTPRequest {
 	 * @return integer Status.
 	 */
 	public function run() {
-		$this->header('Content-Type: text/html');
-		$this->setcookie('testcookie', '1');
+		try {
+			$this->header('Content-Type: text/html');
+			$this->setcookie('testcookie', '1');
+		} catch (RequestHeadersAlreadySent $e) {
+		}
 		$this->registerShutdownFunction(function() {
 ?></html><?php
 		});
@@ -74,9 +77,9 @@ class ExampleRequest extends HTTPRequest {
 <title>It works!</title>
 </head>
 <body>
-<h1>It works! Be happy! !;-)</h1>
-Hello world!<br />
-Testing Error Message: <?php trigger_error('_text_of_notice_'); ?>
+<h1>It works! Be happy! ;-) </h1>
+*Hello world!<br />
+Testing Error Message: <?php /*trigger_error('_text_of_notice_');*/ ?>
 <br />Counter of requests to this Application Instance: <b><?php echo ++$this->appInstance->counter; ?></b>
 <br />Memory usage: <?php $mem = memory_get_usage(); echo ($mem / 1024 / 1024); ?> MB. (<?php echo $mem; ?>)
 <br />Memory real usage: <?php $mem = memory_get_usage(TRUE); echo ($mem / 1024 / 1024); ?> MB. (<?php echo $mem; ?>)
@@ -125,8 +128,10 @@ if ($displaystate) {
 		'_SERVER' => $_SERVER,
 	));
 ?></pre>
-<br />Request took: <?php printf('%f', round(microtime(TRUE) - $_SERVER['REQUEST_TIME_FLOAT'], 6)); ?>
-</body><?php
+<br />Request took: <?php printf('%f', round(microtime(TRUE) - $_SERVER['REQUEST_TIME_FLOAT'], 6));
+//echo '<!-- '. str_repeat('x',1024*1024).' --->';
+//echo '<!-- '. str_repeat('x',1024*1024).' --->';
+//echo '<!-- '. str_repeat('x',1024*1024).' --->';
+?></body><?php
 	}
-	
 }

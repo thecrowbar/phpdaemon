@@ -14,7 +14,7 @@ class ExampleWithMongo extends AppInstance {
 	 * @return void
 	 */
 	public function init() {
-		$this->mongo = MongoClient::getInstance(
+		$this->mongo = MongoClientAsync::getInstance(
 			array('maxconnperserv' => 100)
 		);
 	}
@@ -59,9 +59,9 @@ class ExampleWithMongoRequest extends HTTPRequest {
 				
 			}, array('sort' => array('$natural' => -1)));
 		});
-		
+
 		$job(); // let the fun begin
-		
+
 		$this->sleep(1, true); // setting timeout
 	}
 

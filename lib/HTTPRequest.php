@@ -13,7 +13,7 @@ class HTTPRequest extends Request {
 	 * Status codes
 	 * @var array
 	 */
-	private static $codes = array (
+	protected static $codes = [
 		100 => 'Continue',
 		101 => 'Switching Protocols',
 		200 => 'OK',
@@ -48,118 +48,199 @@ class HTTPRequest extends Request {
 		414 => 'Request-URI Too Long',
 		415 => 'Unsupported Media Type',
 		416 => 'Requested Range Not Satisfiable',
-		417 => 'Expectation Failed',
+        417 => 'Expectation Failed',
+        422 => 'Unprocessable Entity',
+        423 => 'Locked',
 		500 => 'Internal Server Error',
 		501 => 'Not Implemented',
 		502 => 'Bad Gateway',
 		503 => 'Service Unavailable',
 		504 => 'Gateway Timeout',
 		505 => 'HTTP Version Not Supported',
-	);
+	];
 
-	// @todo phpdoc needed
-	public $oldFashionUploadFP = false;
-	public $answerlen = 0;
-	public $contentLength;
-	private $cookieNum = 0;
+	/**
+	 * Current response length
+	 * @var integer
+	 */
+	public $responseLength = 0;
 
-	public static $hvaltr = array(';' => '&', ' ' => '');
-	public static $htr = array('-' => '_');
+	/**
+	 * Content length from header() method
+	 * @var integer
+	 */
+	protected $contentLength;
 
-	public $mpartstate = 0;
-	public $mpartoffset = 0;
-	public $mpartcondisp = false;
-	public $headers = array('STATUS' => '200 OK');
-	public $headers_sent = false; // @todo make private
-	private $headers_sent_file;
-	private $headers_sent_line;
-	private $boundary = false;
-	public $sendfp;
-	
-	const MPSTATE_SEEKBOUNDARY = 0;
-	const MPSTATE_HEADERS = 1;
-	const MPSTATE_BODY = 2;
-	const MPSTATE_UPLOAD = 3;
+	/**
+	 * Number of outgoing cookie-headers
+	 * @var integer
+	 */
+	protected $cookieNum = 0;
+
+	/**
+	 * Replacement pairs for processing some header values in parse_str()
+	 * @var hash
+	 */
+	public static $hvaltr = [';' => '&', ' ' => ''];
+
+	/**
+	 * State
+	 * @var hash
+	 */
+	public static $htr = ['-' => '_'];
+
+
+
+	/**
+	 * Outgoing headers
+	 * @var hash
+	 */
+	protected $headers = ['STATUS' => '200 OK'];
+
+	/**
+	 * Headers sent?
+	 * @var boolean
+	 */
+	protected $headers_sent = false;
+
+	/**
+	 * File name where output started in the file and line variables.
+	 * @var boolean
+	 */
+	protected $headers_sent_file;
+
+	/**
+	 * Line number where output started in the file and line variables.
+	 * @var boolean
+	 */
+	protected $headers_sent_line;
+
+	/**
+	 * File pointer to send output (X-Sendfile)
+	 * @var File
+	 */
+	protected $sendfp;
+
+	/**
+	 * Frozen input?
+	 * @var boolean
+	 */
+	protected $frozenInput = false;
 
 	/**
 	 * Preparing before init
-	 * @todo protected?
 	 * @param object Source request
 	 * @return void
 	 */
-	public function preinit($req) {
+	protected function preinit($req) {
 		if ($req === null) {
 			$req = new \stdClass;
 			$req->attrs = new \stdClass;
-			$req->attrs->stdin_done = true;
-			$req->attrs->params_done = true;
+			$req->attrs->inputDone = true;
+			$req->attrs->paramsDone = true;
 			$req->attrs->chunked = false;
 		}
 
 		$this->attrs = $req->attrs;
 
-		if ($this->upstream->config->expose->value) {
+		if ($this->upstream->pool->config->expose->value) {
 			$this->header('X-Powered-By: phpDaemon/' . Daemon::$version);
 		}
 
+		$this->attrs->input->setRequest($this);
+
 		$this->parseParams();
 	}
-	
+
+
+	/**
+	 * Output whole contents of file
+	 * @param string Path
+	 * @param callable Callback
+	 * @param priority
+	 * @return boolean Success
+	 */
 	public function sendfile($path, $cb, $pri = EIO_PRI_DEFAULT) {
-		$req = $this;
+		if ($this->state === self::STATE_FINISHED) {
+			return false;
+		}
 		try {
 			$this->header('Content-Type: ' . MIME::get($path));
 		} catch (RequestHeadersAlreadySent $e) {}
-		if ($this->conn->sendfileCap) {
-			$req->ensureSentHeaders();
-			$req->conn->onWriteOnce(function($conn) use ($req, $path, $cb, $pri) {
-				FS::sendfile($req->conn->fd, $path, $cb, 0, null, $pri);
-			});
-			return;
+		if ($this->upstream->checkSendfileCap()) {
+			FS::sendfile($this->upstream, $path, $cb, function ($file, $length, $handler) {
+				try {
+					$this->header('Content-Length: ' . $length);
+				} catch (RequestHeadersAlreadySent $e) {}
+				$this->ensureSentHeaders();
+				$this->upstream->onWriteOnce(function($conn) use ($handler, $file) {
+					$handler($file);
+				});
+				return true;
+			}, 0, null, $pri);
+			return true;
 		}
 		$first = true;
-		FS::readfileChunked($path, $cb,
-			function($file, $chunk) use ($req, &$first) { // readed chunk
-				if ($first) {
-					try {
-						$req->header('Content-Length: ' . $file->stat['size']);
-					} catch (RequestHeadersAlreadySent $e) {}
-					$first = false;
-				}
-				$req->out($chunk);
+		FS::readfileChunked($path, $cb, function($file, $chunk) use (&$first) { // readed chunk
+			if ($this->upstream->isFreed()) {
+				return false;
 			}
-		);
+			if ($first) {
+				try {
+					$this->header('Content-Length: ' . $file->stat['size']);
+				} catch (RequestHeadersAlreadySent $e) {}
+				$first = false;
+			}
+			$this->out($chunk);
+			return true;
+		});
+		return true;
 	}
-	
+
 	/**
-	 * Called by call() to check if ready
-	 * @todo protected?
-	 * @return void
+	 * Called to check if Request is ready
+	 * @return boolean Ready?
 	 */
-	public function preCall() {
-		if (
-			!$this->attrs->params_done
-			|| !$this->attrs->stdin_done
-		) {
-			$this->state = Request::STATE_SLEEPING;
-		} else {
-			if (isset($this->appInstance->passphrase)) {
-				if (
-					!isset($this->attrs->server['PASSPHRASE'])
-					|| ($this->appInstance->passphrase !== $this->attrs->server['PASSPHRASE'])
-				) {
-					$this->finish();
-				}
-			}
+	public function checkIfReady() {
+		if (!$this->attrs->paramsDone || !$this->attrs->inputDone) {
+			return false;
 		}
+		if (isset($this->appInstance->passphrase)) {
+			if (
+				!isset($this->attrs->server['PASSPHRASE'])
+				|| ($this->appInstance->passphrase !== $this->attrs->server['PASSPHRASE'])
+			) {
+				$this->finish();
+			}
+			return false;
+		}
+		if ($this->attrs->input->isFrozen()) {
+			return false;
+		}
+		if ($this->sleepTime === 0) {
+			$this->wakeup();
+		}
+		return true;
+	}
+
+	/**
+	 * Upload maximum file size
+	 * @return integer
+	 */
+	public function getUploadMaxSize() {
+		return $this->upstream->pool->config->uploadmaxsize->value;
 	}
 
 	/**
 	 * Parses GET-query string and other request's headers
-	 * @todo private?
 	 * @return void
 	 */
-	public function parseParams() {
+	protected function parseParams() {
+		if (!isset($this->attrs->server['HTTP_CONTENT_LENGTH'])) {
+			$this->attrs->contentLength = 0;
+		} else {
+			$this->attrs->contentLength = (int) $this->attrs->server['HTTP_CONTENT_LENGTH'];
+		}
 		if (
 			isset($this->attrs->server['CONTENT_TYPE'])
 			&& !isset($this->attrs->server['HTTP_CONTENT_TYPE'])
@@ -173,7 +254,7 @@ class HTTPRequest extends Request {
 
 		if (
 			isset($this->attrs->server['REQUEST_METHOD'])
-			&& ($this->attrs->server['REQUEST_METHOD'] == 'POST')
+			&& ($this->attrs->server['REQUEST_METHOD'] === 'POST')
 			&& isset($this->attrs->server['HTTP_CONTENT_TYPE'])
 		) {
 			self::parse_str($this->attrs->server['HTTP_CONTENT_TYPE'], $this->contype, true);
@@ -189,11 +270,10 @@ class HTTPRequest extends Request {
 				}
 			}
 
-			if (
-				isset($this->contype['multipart/form-data'])
+			if (isset($this->contype['multipart/form-data'])
 				&& (isset($this->contype['boundary']))
 			) {
-				$this->boundary = $this->contype['boundary'];
+				$this->attrs->input->setBoundary($this->contype['boundary']);
 			}
 		}
 
@@ -205,7 +285,7 @@ class HTTPRequest extends Request {
 			$e = explode(' ', $this->attrs->server['HTTP_AUTHORIZATION'], 2);
 
 			if (
-				($e[0] == 'Basic')
+				($e[0] === 'Basic')
 				&& isset($e[1])
 			) {
 				$e[1] = base64_decode($e[1]);
@@ -225,117 +305,93 @@ class HTTPRequest extends Request {
 	 * @return void
 	 */
 	public function postPrepare() {
-		if (
-			isset($this->attrs->server['REQUEST_METHOD'])
-			&& ($this->attrs->server['REQUEST_METHOD'] == 'POST')
+		if (!isset($this->attrs->server['REQUEST_METHOD']) || ($this->attrs->server['REQUEST_METHOD'] !== 'POST')) {
+			return;
+		}
+		if (isset($this->attrs->server['REQUEST_PREPARED_UPLOADS']) && $this->attrs->server['REQUEST_PREPARED_UPLOADS'] === 'nginx') {
+			if (isset($this->attrs->server['REQUEST_PREPARED_UPLOADS_URL_PREFIX'])) {
+				$URLprefix = $this->attrs->server['REQUEST_PREPARED_UPLOADS_URL_PREFIX'];
+				$l = strlen($URLprefix);
+				foreach (array('PHP_SELF', 'REQUEST_URI', 'SCRIPT_NAME', 'DOCUMENT_URI') as $k) {
+					if (!isset($this->attrs->server[$k])) {continue;}
+					if (strncmp($this->attrs->server[$k], $URLprefix, $l) === 0) {
+						$this->attrs->server[$k] = substr($this->attrs->server[$k], $l - 1);
+					}
+				}
+			}
+			$prefix = 'file.';
+			$prefixlen = strlen($prefix);
+			foreach ($this->attrs->post as $k => $v) {
+				if (strncmp($k, $prefix, $prefixlen) === 0) {
+					$e = explode('.', substr($k, $prefixlen));
+					if (!isset($this->attrs->files[$e[0]])) {
+						$this->attrs->files[$e[0]] = array('error' => UPLOAD_ERR_OK);
+					}
+					$this->attrs->files[$e[0]][$e[1]] = $v;
+				}
+			}
+			$uploadTmp = $this->getUploadTempDir();
+			foreach ($this->attrs->files as $k => &$file) {
+				if (!isset($file['tmp_name'])
+					|| !isset($file['name'])
+					|| !ctype_digit(basename($file['tmp_name']))
+					|| pathinfo($file['tmp_name'], PATHINFO_DIRNAME) !== $uploadTmp)
+				{
+					unset($this->attrs->files[$k]);
+					continue;
+				}
+				FS::open($file['tmp_name'], 'c+!', function ($fp) use (&$file) {
+					if (!$fp) {
+						return;
+					}
+					$file['fp'] = $fp;
+				});
+			}
+			unset($file);
+		}
+		if (isset($this->attrs->server['REQUEST_BODY_FILE'])
+			&& $this->upstream->pool->config->autoreadbodyfile->value
 		) {
-			if (isset($this->contype['application/x-www-form-urlencoded'])) {
-				self::parse_str($this->attrs->stdinbuf, $this->attrs->post);
-			}
-
-			if (isset($this->attrs->server['REQUEST_PREPARED_UPLOADS']) && $this->attrs->server['REQUEST_PREPARED_UPLOADS'] === 'nginx') {
-				if (isset($this->attrs->server['REQUEST_PREPARED_UPLOADS_URL_PREFIX'])) {
-					$URLprefix = $this->attrs->server['REQUEST_PREPARED_UPLOADS_URL_PREFIX'];
-					$l = strlen($URLprefix);
-					foreach (array('PHP_SELF', 'REQUEST_URI', 'SCRIPT_NAME', 'DOCUMENT_URI') as $k) {
-						if (!isset($this->attrs->server[$k])) {continue;}
-						if (strncmp($this->attrs->server[$k], $URLprefix, $l) === 0) {
-							$this->attrs->server[$k] = substr($this->attrs->server[$k], $l - 1);
-						}
-					}
-				}
-
-				$prefix = 'file.';
-				$prefixlen = strlen($prefix);
-				foreach ($this->attrs->post as $k => $v) {
-					if (strncmp($k, $prefix, $prefixlen) === 0) {
-						$e = explode('.', substr($k, $prefixlen));
-						if (!isset($this->attrs->files[$e[0]])) {
-							$this->attrs->files[$e[0]] = array('error' => UPLOAD_ERR_OK);
-						}
-						$this->attrs->files[$e[0]][$e[1]] = $v;
-					}
-				}
-				foreach ($this->attrs->files as $k => &$file) {
-					if (!isset($file['tmp_name'])
-						|| !isset($file['name'])
-						|| !ctype_digit(basename($file['tmp_name']))
-						|| pathinfo($file['tmp_name'], PATHINFO_DIRNAME) !== ini_get('upload_tmp_dir'))
-					{
-						unset($this->attrs->files[$k]);
-						continue;
-					}
-					if ($this->oldFashionUploadFP) {
-						$file['fp'] = fopen($file['tmp_name'], 'c+');
-					} else {
-						FS::open($file['tmp_name'], 'c+', function ($fp) use (&$file) {
-							if (!$fp) {
-								return;
-							}
-							$file['fp'] = $fp;
-						});
-					}
-					unset($file);
-				}
-			}
-
-			if (
-				isset($this->attrs->server['REQUEST_BODY_FILE'])
-				&& $this->upstream->config->autoreadbodyfile->value
-			) {
-				$this->readBodyFile();
-			}
+			$this->readBodyFile();
 		}
 	}
 
 	/**
-	 * @description Called when new piece of request's body is received
-	 * @param string Piece of request body
-	 * @return void
+	 * Ensure that headers are sent
+	 * @return boolean Were already sent?
 	 */
-	public function stdin($c) {
-		if ($c !== '') {
-			$this->attrs->stdinbuf .= $c;
-			$this->attrs->stdinlen += strlen($c);
-		}
-		if (
-			!isset($this->attrs->server['HTTP_CONTENT_LENGTH'])
-			|| ($this->attrs->server['HTTP_CONTENT_LENGTH'] <= $this->attrs->stdinlen)
-		) {
-			$this->attrs->stdin_done = true;
-			$this->postPrepare();
-		}
-		$this->parseStdin();
-	}
-
 	public function ensureSentHeaders() {
-		if (!$this->headers_sent) {
-			if (isset($this->headers['STATUS'])) {
-				$h = (isset($this->attrs->noHttpVer) && ($this->attrs->noHttpVer) ? 'Status: ' : $this->attrs->server['SERVER_PROTOCOL']) . ' ' . $this->headers['STATUS'] . "\r\n";
-			} else {
-				$h = '';
-			}
-
-			if ($this->attrs->chunked) {
-				$this->header('Transfer-Encoding: chunked');
-			}
-
-			foreach ($this->headers as $k => $line) {
-				if ($k !== 'STATUS') {
-					$h .= $line . "\r\n";
-				}
-			}
-
-			$h .= "\r\n";
-			$this->headers_sent_file = __FILE__;
-			$this->headers_sent_line = __LINE__;
-			$this->headers_sent = true;
-			$this->conn->requestOut($this, $h);
-			return false;
+		if ($this->headers_sent) {
+			return true;
 		}
-		return true;
+		if (isset($this->headers['STATUS'])) {
+			$h = (isset($this->attrs->noHttpVer) && ($this->attrs->noHttpVer) ? 'Status: ' : $this->attrs->server['SERVER_PROTOCOL']) . ' ' . $this->headers['STATUS'] . "\r\n";
+		} else {
+			$h = '';
+		}
+		if ($this->contentLength === null && $this->upstream->checkChunkedEncCap()) {
+			$this->attrs->chunked = true;
+		}
+		if ($this->attrs->chunked) {
+			$this->header('Transfer-Encoding: chunked');
+		}
+		if ($this->upstream instanceof HTTPServerConnection) {
+			$this->header('Connection: close');
+		}
+
+		foreach ($this->headers as $k => $line) {
+			if ($k !== 'STATUS') {
+				$h .= $line . "\r\n";
+			}
+		}
+		$h .= "\r\n";
+		$this->headers_sent_file = __FILE__;
+		$this->headers_sent_line = __LINE__;
+		$this->headers_sent = true;
+		$this->upstream->requestOut($this, $h);
+		return false;
 	}
-	
+
 	/**
 	 * Output some data
 	 * @param string String to out
@@ -351,18 +407,18 @@ class HTTPRequest extends Request {
 		if ($this->aborted) {
 			return false;
 		}
-		if (!isset($this->conn)) {
-				return false;
+		if (!isset($this->upstream)) {
+			return false;
 		}
-		
+
 		$l = strlen($s);
-		$this->answerlen += $l;
+		$this->responseLength += $l;
 
 		$this->ensureSentHeaders();
-		
+
 		if ($this->attrs->chunked) {
 			for ($o = 0; $o < $l;) {
-				$c = min($this->upstream->config->chunksize->value, $l - $o);
+				$c = min($this->upstream->pool->config->chunksize->value, $l - $o);
 
 				$chunk = dechex($c) . "\r\n"
 					. ($c === $l ? $s : binarySubstr($s, $o, $c)) // content
@@ -371,11 +427,12 @@ class HTTPRequest extends Request {
 				if ($this->sendfp) {
 					$this->sendfp->write($chunk);
 				} else {
-					$this->conn->requestOut($this, $chunk);
+					$this->upstream->requestOut($this, $chunk);
 				}
 
 				$o += $c;
 			}
+			return true;
 		} else {
 			if ($this->sendfp) {
 				$this->sendfp->write($s);
@@ -387,7 +444,7 @@ class HTTPRequest extends Request {
 				return true;
 			}
 
-			return $this->conn->requestOut($this, $s);
+			return $this->upstream->requestOut($this, $s);
 		}
 	}
 
@@ -399,8 +456,7 @@ class HTTPRequest extends Request {
 
 	/**
 	 * Outputs data with headers (split by \r\n\r\n)
-	 * @todo description missed (what is the difference between this and out()) ?
-	 * @param string String to out
+	 * @param string
 	 * @return boolean Success.
 	 */
 	public function combinedOut($s) {
@@ -472,20 +528,20 @@ class HTTPRequest extends Request {
 	 * Send HTTP-status
 	 * @throws RequestHeadersAlreadySent
 	 * @param int Code
-	 * @return void
+	 * @return boolean Success
 	 */
 	public function status($code = 200) {
 		if (!isset(self::$codes[$code])) {
 			return false;
 		}
-
 		$this->header($code . ' ' . self::$codes[$code]);
-
 		return true;
 	}
 
 	/**
-	 * Analog of standard PHP function headers_sent
+	 * Checks if headers have been sent
+	 * @var boolean
+	 *
 	 * @return boolean Success
 	 */
 	public function headers_sent(&$file, &$line) {
@@ -528,8 +584,8 @@ class HTTPRequest extends Request {
 	 * @param string Header. Example: 'Location: http://php.net/'
 	 * @param boolean Optional. Replace?
 	 * @param int Optional. HTTP response code.
-	 * @return void
 	 * @throws RequestHeadersAlreadySent
+	 * @return boolean Success
 	 */
 	public function header($s, $replace = true, $code = false) {
 		if ($code !== null) {
@@ -537,9 +593,9 @@ class HTTPRequest extends Request {
 		}
 
 		if ($this->headers_sent) {
-			throw new RequestHeadersAlreadySent();
-			return false;
+			throw new RequestHeadersAlreadySent;
 		}
+		$s = strtr($s, "\r\n", '  ');
 
 		$e = explode(':', $s, 2);
 
@@ -556,7 +612,7 @@ class HTTPRequest extends Request {
 		if ($k === 'CONTENT_TYPE') {
 			self::parse_str(strtolower($e[1]), $ctype, true);
 			if (!isset($ctype['charset'])) {
-				$ctype['charset'] = $this->upstream->config->defaultcharset->value;
+				$ctype['charset'] = $this->upstream->pool->config->defaultcharset->value;
 
 				$s = $e[0].': ';
 				$i = 0;
@@ -570,10 +626,7 @@ class HTTPRequest extends Request {
 		if ($k === 'SET_COOKIE') {
 			$k .= '_'.++$this->cookieNum;
 		}
-		elseif (
-			!$replace
-			&& isset($this->headers[$k])
-		) {
+		elseif (!$replace && isset($this->headers[$k])) {
 			return false;
 		}
 
@@ -594,248 +647,127 @@ class HTTPRequest extends Request {
 	}
 
 	/**
-	 * @todo description missing
+	 * Converts human-readable representation of size to number of bytes
+	 * @return integer
 	 */
-	public function parseSize($value) {
-		$l = strtolower(substr($value, -1));
+	public static function parseSize($value) {
+		$l = substr($value, -1);
 
-		if ($l === 'b') {
+		if ($l === 'b' || $l === 'B') {
 			return ((int) substr($value, 0, -1));
 		}
 
 		if ($l === 'k') {
+			return ((int) substr($value, 0, -1) * 1000);
+		}
+
+		if ($l === 'K') {
 			return ((int) substr($value, 0, -1) * 1024);
 		}
 
 		if ($l === 'm') {
+			return ((int) substr($value, 0, -1) * 1000 * 1000);
+		}
+
+		if ($l === 'M') {
 			return ((int) substr($value, 0, -1) * 1024 * 1024);
 		}
 
 		if ($l === 'g') {
+			return ((int) substr($value, 0, -1) * 1000 * 1000 * 1000);
+		}
+
+		if ($l === 'G') {
 			return ((int) substr($value, 0, -1) * 1024 * 1024 * 1024);
 		}
+
 		return (int) $value;
 	}
 
 	/**
-	 * Parse request body
+	 * Called when file upload started.
+	 * @param HTTPRequestInput
 	 * @return void
 	 */
-	public function parseStdin() {
-		if (!isset($this->contype['multipart/form-data'])) {
-			return;
-		}
-		start:
-		if ($this->mpartstate === self::MPSTATE_SEEKBOUNDARY) {
-			// seek to the nearest boundary
-			if (($p = strpos($this->attrs->stdinbuf, $ndl = '--' . $this->boundary . "\r\n", $this->mpartoffset)) !== false) {
-				// we have found the nearest boundary at position $p
-				$this->mpartoffset = $p + strlen($ndl);
-				$this->mpartstate = self::MPSTATE_HEADERS;
+	public function onUploadFileStart($in) {
+		$this->freezeInput();
+		FS::tempnam(ini_get('upload_tmp_dir'), 'php', function ($fp) use ($in) {
+			if (!$fp) {
+				$in->curPart['fp'] = false;
+				$in->curPart['error'] = UPLOAD_ERR_NO_TMP_DIR;
 			} else {
-				return;
+				$in->curPart['fp'] = $fp;
+				$in->curPart['tmp_name'] = $fp->path;
 			}
-		}
-		if ($this->mpartstate === self::MPSTATE_HEADERS) {
-			// parse the part's headers
-			$this->mpartcondisp = false;
-			if (($p = strpos($this->attrs->stdinbuf, "\r\n\r\n", $this->mpartoffset)) !== false) {
-				// we got all of the headers
-				$h = explode("\r\n", binarySubstr($this->attrs->stdinbuf, $this->mpartoffset, $p - $this->mpartoffset));
-				$this->mpartoffset = $p + 4;
-				$this->attrs->stdinbuf = binarySubstr($this->attrs->stdinbuf, $this->mpartoffset);
-				$this->mpartoffset = 0;
-				for ($i = 0, $s = sizeof($h); $i < $s; ++$i) {
-					$e = explode(':', $h[$i], 2);
-					$e[0] = strtr(strtoupper($e[0]), HTTPRequest::$htr);
-
-					if (isset($e[1])) {
-						$e[1] = ltrim($e[1]);
-					}
-					if (
-						($e[0] == 'CONTENT_DISPOSITION')
-						&& isset($e[1])
-					) {
-						self::parse_str($e[1], $this->mpartcondisp, true);
-						if (!isset($this->mpartcondisp['form-data'])) {
-							break;
-						}
-
-						if (!isset($this->mpartcondisp['name'])) {
-							break;
-						}
-						$this->mpartcondisp['name'] = trim($this->mpartcondisp['name'], '"');
-						$name = $this->mpartcondisp['name'];
-						if (isset($this->mpartcondisp['filename'])) {
-							$this->mpartcondisp['filename'] = trim($this->mpartcondisp['filename'], '"');
-							if (!ini_get('file_uploads')) {
-								break;
-							}
-							$this->attrs->files[$name] = array(
-								'name'     => $this->mpartcondisp['filename'],
-								'type'     => '',
-								'tmp_name' => '',
-								'error'    => UPLOAD_ERR_OK,
-								'size'     => 0,
-							);
-							$tmpdir = ini_get('upload_tmp_dir');
-							if ($tmpdir === false) {
-								$this->attrs->files[$name]['fp'] = false;
-								$this->attrs->files[$name]['error'] = UPLOAD_ERR_NO_TMP_DIR;
-							} else {
-								$this->attrs->files[$name]['tmp_name'] = FS::tempnam($tmpdir, 'php');
-								if ($this->oldFashionUploadFP) {
-									$this->attrs->files[$name]['fp'] = fopen($this->attrs->files[$name]['tmp_name'], 'c+');
-								} else {
-									$req = $this;
-									if (FS::$supported) {
-										$this->conn->lockRead();
-									}
-									FS::open($this->attrs->files[$name]['tmp_name'], 'c+', function ($fp) use ($req, $name) {
-										if (!$fp) {
-											$req->attrs->files[$name]['error'] = UPLOAD_ERR_CANT_WRITE;
-										}
-										$req->attrs->files[$name]['fp'] = $fp;
-										if (FS::$supported) {
-											$req->conn->unlockRead();
-											$req->stdin('');
-										}
-									});
-								}
-							}
-							$this->mpartstate = self::MPSTATE_UPLOAD;
-						} else {
-							$this->attrs->post[$this->mpartcondisp['name']] = '';
-						}
-					}
-					elseif (
-						($e[0] == 'CONTENT_TYPE')
-						&& isset($e[1])
-					) {
-						if (
-							isset($this->mpartcondisp['name'])
-							&& isset($this->mpartcondisp['filename'])
-						) {
-							$this->attrs->files[$this->mpartcondisp['name']]['type'] = $e[1];
-						}
-					}
-				}
-				if ($this->mpartstate === self::MPSTATE_HEADERS) {
-					$this->mpartstate = self::MPSTATE_BODY;
-				}
-
-				if ($this->conn->readLocked) {
-					return;
-				}
-
-				goto start;
-			}
-		}
-		if (
-			($this->mpartstate === self::MPSTATE_BODY)
-			|| ($this->mpartstate === self::MPSTATE_UPLOAD)
-		) {
-			 // process the body
-			if (
-				(($p = strpos($this->attrs->stdinbuf, $ndl = "\r\n--" . $this->boundary . "\r\n", $this->mpartoffset)) !== false)
-				|| (($p = strpos($this->attrs->stdinbuf, $ndl = "\r\n--" . $this->boundary . "--\r\n", $this->mpartoffset)) !== false)
-			) { // we have the whole Part in buffer
-				$chunk = binarySubstr($this->attrs->stdinbuf, $this->mpartoffset, $p - $this->mpartoffset);
-				if (
-					($this->mpartstate === self::MPSTATE_BODY)
-					&& isset($this->mpartcondisp['name'])
-				) {
-					$this->attrs->post[$this->mpartcondisp['name']] .= $chunk;
-				}
-				elseif (
-					($this->mpartstate === self::MPSTATE_UPLOAD)
-					&& isset($this->mpartcondisp['filename'])
-				) {
-
-					if (!isset($this->attrs->files[$this->mpartcondisp['name']]['fp'])) {
-						return; // fd is not ready yet, interrupt
-					}
-
-					if ($fp = $this->attrs->files[$this->mpartcondisp['name']]['fp']) {
-						if ($this->oldFashionUploadFP) {
-							fwrite($fp, $chunk);
-						} else {
-							$fp->write($chunk);
-						}
-					}
-
-					$this->attrs->files[$this->mpartcondisp['name']]['size'] += strlen($chunk);
-				}
-				if ($ndl === "\r\n--" . $this->boundary . "--\r\n") { // end of whole message
-					$this->mpartoffset = $p + strlen($ndl);
-					$this->mpartstate = self::MPSTATE_SEEKBOUNDARY;
-					$this->stdin_done = true;
-				} else {
-					$this->mpartoffset = $p;
-					$this->mpartstate = self::MPSTATE_HEADERS; // let's read the next part
-					goto start;
-				}
-
-				$this->attrs->stdinbuf = binarySubstr($this->attrs->stdinbuf, $this->mpartoffset);
-				$this->mpartoffset = 0;
-			} else { // we have only piece of Part in buffer
-				$p = strlen($this->attrs->stdinbuf) - strlen($ndl);
-				if ($p !== false) {
-					$chunk = binarySubstr($this->attrs->stdinbuf, $this->mpartoffset, $p - $this->mpartoffset);
-					if (
-						($this->mpartstate === self::MPSTATE_BODY)
-						&& isset($this->mpartcondisp['name'])
-					) {
-						$this->attrs->post[$this->mpartcondisp['name']] .= $chunk;
-					}
-					elseif (
-						($this->mpartstate === self::MPSTATE_UPLOAD)
-						&& isset($this->mpartcondisp['filename'])
-					) {
-						if (!isset($this->attrs->files[$this->mpartcondisp['name']]['fp'])) {
-							return; // fd is not ready yet, interrupt
-						}
-						if ($fp = $this->attrs->files[$this->mpartcondisp['name']]['fp']) {
-							if ($this->oldFashionUploadFP) {
-								fwrite($fp, $chunk);
-							} else {
-								$fp->write($chunk);
-							}
-						}
-						$this->attrs->files[$this->mpartcondisp['name']]['size'] += $p - $this->mpartoffset;
-
-						if ($this->parseSize(ini_get('upload_max_filesize')) < $this->attrs->files[$this->mpartcondisp['name']]['size']) {
-							$this->attrs->files[$this->mpartcondisp['name']]['error'] = UPLOAD_ERR_INI_SIZE;
-						}
-
-						if (
-							isset($this->attrs->post['MAX_FILE_SIZE'])
-							&& ($this->attrs->post['MAX_FILE_SIZE'] < $this->attrs->files[$this->mpartcondisp['name']]['size'])
-						) {
-							$this->attrs->files[$this->mpartcondisp['name']]['error'] = UPLOAD_ERR_FORM_SIZE;
-						}
-					}
-
-					$this->mpartoffset = $p;
-					$this->attrs->stdinbuf = binarySubstr($this->attrs->stdinbuf, $this->mpartoffset);
-					$this->mpartoffset = 0;
-				}
-			}
-		}
+			$this->unfreezeInput();
+		});
 	}
 
+	/**
+	 * Called when chunk of incoming file has arrived.
+	 * @param HTTPRequestInput
+	 * @param boolean Last?
+	 * @return void
+	 */
+	public function onUploadFileChunk($in, $last = false) {
+		if ($in->curPart['error'] !== UPLOAD_ERR_OK) {
+			// just drop the chunk
+			return;
+		}
+		$cb = function ($fp, $result) use ($last, $in) {
+			if ($last) {
+				unset($in->curPart['fp']);
+			}
+			$this->unfreezeInput();
+		};
+		if ($in->writeChunkToFd($in->curPart['fp']->getFd())) {
+			// We had written via internal method
+			return;
+		}
+		// Internal method is not available, let's get chunk data into $chunk and then use File->write()
+		$chunk = $in->getChunkString();
+		if ($chunk === false) {
+			return;
+		}
+		$this->freezeInput();
+		$in->curPart['fp']->write($chunk, $cb);
+	}
+
+	/**
+	 * Freeze input
+	 * @return void
+	 */
+	protected function freezeInput() {
+		$this->upstream->freezeInput();
+		$this->attrs->input->freeze();
+	}
+
+	/**
+	 * Unfreeze input
+	 * @return void
+	 */
+	protected function unfreezeInput() {
+		$this->upstream->unfreezeInput();
+		$this->attrs->input->unfreeze();
+	}
+
+	public function getUploadTempDir() {
+		if ($r = ini_get('upload_tmp_dir')) {
+			return $r;
+		}
+		return sys_get_temp_dir();
+	}
 
 	/**
 	 * Tells whether the file was uploaded via HTTP POST
 	 * @param string The filename being checked.
-	 * @return void
+	 * @return boolean Whether if this is uploaded file.
 	 */
 	public function isUploadedFile($path) {
-		$path = realpath($path);
 		if (!$path) {
 			return false;
 		}
-		if (strpos($path, ini_get('upload_tmp_dir') . '/') !== 0) {
+		if (strpos($path, $this->getUploadTempDir() . '/') !== 0) {
 			return false;
 		}
 		foreach ($this->attrs->files as $file) {
@@ -850,32 +782,35 @@ class HTTPRequest extends Request {
 	 *  Moves an uploaded file to a new location
 	 * @param string The filename of the uploaded file.
 	 * @param string The destination of the moved file.
-	 * @return void
+	 * @return boolean Success
 	 */
 	public function moveUploadedFile($filename,$dest) {
 		if (!$this->isUploadedFile($filename)) {
 			return false;
 		}
-		return rename($filename, $dest);
+		return FS::rename($filename, $dest);
 	 }
 
 	/**
 	 * Read request body from the file given in REQUEST_BODY_FILE parameter.
-	 * @return void
+	 * @return boolean Success
 	 */
 	public function readBodyFile() {
 		if (!isset($this->attrs->server['REQUEST_BODY_FILE'])) {
 			return false;
 		}
-		$req = $this;
 		FS::readfileChunked($this->attrs->server['REQUEST_BODY_FILE'],
-			function ($file, $success) use ($req) {
-				$req->attrs->stdin_done = true;
+			function ($file, $success) {
+				$this->attrs->bodyDone = true;
+				if ($this->sleepTime === 0) {
+					$this->wakeup();
+				}
 			},
-			function($file, $chunk) use ($req) { // readed chunk
-				$req->stdin($chunk);
+			function($file, $chunk) { // readed chunk
+				$this->stdin($chunk);
 			}
 		);
+		return true;
 	}
 
 	/**
@@ -905,20 +840,18 @@ class HTTPRequest extends Request {
 	}
 
 	/**
-	 * @todo description missing
-	 * @todo protected?
+	 * Called after request finish
+	 * @return void
 	 */
-	public function postFinishHandler() {
+	protected function postFinishHandler() {
 		if (!$this->headers_sent) {
 			$this->out('');
 		}
+		$this->attrs->input = null;
 		$this->sendfp = null;
 		if (isset($this->attrs->files)) {
-			foreach ($this->attrs->files as &$f) {
-				if (
-					($f['error'] === UPLOAD_ERR_OK)
-					&& file_exists($f['tmp_name'])
-				) {
+			foreach ($this->attrs->files as $f) {
+				if (isset($f['tmp_name'])) {
 					FS::unlink($f['tmp_name']);
 				}
 			}
@@ -928,8 +861,11 @@ class HTTPRequest extends Request {
 		}
 	}
 
-	public function sessionCommit() {
+	/**
+	 * Commits the session
+	 * @return void
+	 */
+	protected function sessionCommit() {
 		session_commit();
 	}
-
 }

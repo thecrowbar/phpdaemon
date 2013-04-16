@@ -14,10 +14,10 @@ class IRCBouncer extends NetworkServer {
 	public $messages;
 	public $channels;
 
-	public function init() {
+	protected function init() {
 		$this->client = IRCClient::getInstance();
 		$this->client->protologging = $this->protologging;
-		$this->db = MongoClient::getInstance();
+		$this->db = MongoClientAsync::getInstance();
 		$this->messages = $this->db->{$this->config->dbname->value . '.messages'};
 		$this->channels = $this->db->{$this->config->dbname->value . '.channels'};
 	}
@@ -28,7 +28,7 @@ class IRCBouncer extends NetworkServer {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
+		return [
 			// @todo add description strings
 			'listen'				=> '0.0.0.0',
 			'port' 			        => 6667,
@@ -38,7 +38,7 @@ class IRCBouncer extends NetworkServer {
 			'protologging' => 0,
 			'dbname' => 'bnc',
 			'password' => 'SecretPwd',
-		);
+		];
 	}
 
 	public function applyConfig() {
@@ -56,22 +56,21 @@ class IRCBouncer extends NetworkServer {
 	}
 
 	public function getConnection($url) {
-		$pool = $this;
-		$this->client->getConnection($url, function ($conn) use ($pool, $url) {
-			$pool->conn = $conn;
+		$this->client->getConnection($url, function ($conn) use ($url) {
+			$this->conn = $conn;
 			$conn->attachedClients = new ObjectStorage;
 			if ($conn->connected) {
 				Daemon::log('IRC bot connected at '.$url);
-				$conn->join($pool->config->defaultchannels->value);
+				$conn->join($this->config->defaultchannels->value);
 				$conn->bind('motd', function($conn) {
 					//Daemon::log($conn->motd);
 				});
-				foreach ($pool as $bouncerConn) {
+				foreach ($this as $bouncerConn) {
 					if (!$bouncerConn->attachedServer) {
 						$bouncerConn->attachTo($conn);
 					}
 				}
-				$conn->bind('command', function($conn, $from, $cmd, $args) use ($pool) {
+				$conn->bind('command', function($conn, $from, $cmd, $args) {
 					if ($cmd === 'PONG') {
 						return;
 					}
@@ -79,25 +78,25 @@ class IRCBouncer extends NetworkServer {
 						return;
 					}
 					if ($from['orig'] === $conn->servername) {
-						$from['orig'] = $pool->config->servername->value;
+						$from['orig'] = $this->config->servername->value;
 					}
 					$conn->attachedClients->each('commandArr', $from['orig'], $cmd, $args);
 				});
 				$conn->bind('privateMsg', function($conn, $msg) {
 					Daemon::log('IRCBouncer: got private message \''.$msg['body'].'\' from \''.$msg['from']['orig'].'\'');
 				});
-				$conn->bind('msg', function($conn, $msg) use ($pool) {
+				$conn->bind('msg', function($conn, $msg) {
 					$msg['ts'] = microtime(true);
 					$msg['dir'] = 'i';
-					$pool->messages->insert($msg);
+					$this->messages->insert($msg);
 				});
-				$conn->bind('disconnect', function($conn) use ($pool, $url) {
-					foreach ($pool as $bouncerConn) {
+				$conn->bind('disconnect', function($conn) use ($url) {
+					foreach ($this as $bouncerConn) {
 						if ($bouncerConn->attachedServer === $conn) {
 							$bouncerConn->detach();
 						}
 					}
-					$pool->getConnection($url);
+					$this->getConnection($url);
 				});
 			}
 			else {
@@ -108,47 +107,15 @@ class IRCBouncer extends NetworkServer {
 }
 
 class IRCBouncerConnection extends Connection {
+	use EventHandlers;
+
 	public $EOL = "\r\n";
 	public $attachedServer;
 	public $usermask;
 	public $latency;
 	public $lastPingTS;
 	public $timeout = 180;
-	public $eventHandlers = array();
 	public $protologging = false;
-
-	public function bind($event, $cb) {
-		if (!isset($this->eventHandlers[$event])) {
-			$this->eventHandlers[$event] = array();
-		}
-		$this->eventHandlers[$event][] = $cb;
-	}
-
-	public function unbind($event, $cb = null) {
-		if (!isset($this->eventHandlers[$event])) {
-			return false;
-		}
-		if ($cb === null) {
-			unset($this->eventHandlers[$event]);
-			return true;
-		}
-		if (($p = array_search($cb, $this->eventHandlers[$event], true)) === false) {
-			return false;
-		}
-		unset($this->eventHandlers[$event][$p]);
-		return true;
-	}
-
-	public function event() {
-		$args = func_get_args();
-		$name = array_shift($args);
-		array_unshift($args, $this);
-		if (isset($this->eventHandlers[$name])) {
-			foreach ($this->eventHandlers[$name] as $cb) {
-				call_user_func_array($cb, $args);
-			}
-		}
-	}
 
 	/**
 	 * Called when the connection is handshaked (at low-level), and peer is ready to recv. data
@@ -191,7 +158,7 @@ class IRCBouncerConnection extends Connection {
 			$line .= $arg;
 		}
 		$this->writeln($line);
-		if ($this->pool->protologging && !in_array($cmd, array('PONG'))) {
+		if ($this->pool->protologging && !in_array($cmd, ['PONG'])) {
 			Daemon::log('=>=>=>=> '.json_encode($line));
 		}
 	}
@@ -215,7 +182,7 @@ class IRCBouncerConnection extends Connection {
 			$line .= $args[$i];
 		}
 		$this->writeln($line);
-		if ($this->pool->protologging && !in_array($cmd, array('PONG'))) {
+		if ($this->pool->protologging && !in_array($cmd, ['PONG'])) {
 			Daemon::log('=>=>=>=> '.json_encode($line));
 		}
 	}
@@ -248,9 +215,8 @@ class IRCBouncerConnection extends Connection {
 		$names = $chan->exportNicksArray();
 		$packet = '';
 		$maxlen = 510 - 7 - strlen($this->pool->config->servername->value) - $chan->irc->nick - 1;
-		$s = sizeof($names);
-		foreach ($names as $i => $name) {
-			$packet .= ($packet !== '' ? ' ' : '') . $name;
+		for ($i = 0, $s = sizeof($names); $i < $s; ++$i) {
+			$packet .= ($packet !== '' ? ' ' : '') . $names[$i];
 			if (!isset($names[$i + 1]) || (strlen($packet) + strlen($names[$i + 1]) + 1 > $maxlen)) {
 				$this->command(null, 'RPL_NAMREPLY', $chan->irc->nick, $chan->type, $chan->name, $packet);
 				$packet = '';
@@ -261,7 +227,7 @@ class IRCBouncerConnection extends Connection {
 
 	public function onCommand($cmd, $args) {
 		if ($cmd === 'USER') {
-			list ($nick) = $args;
+			//list ($nick) = $args;
 			$this->attachTo();
 			return;
 		}
@@ -310,13 +276,13 @@ class IRCBouncerConnection extends Connection {
 				}
 				return;
 			}
-			$this->pool->messages->insert(array(
+			$this->pool->messages->insert([
 				'from' => $this->usermask,
 				'to' => $target,
 				'body' => $msg,
 				'ts' => microtime(true),
 				'dir' => 'o',
-			));
+			]);
 		}
 		if ($this->attachedServer) {
 			$this->attachedServer->commandArr($cmd, $args);
@@ -335,14 +301,12 @@ class IRCBouncerConnection extends Connection {
 
 	/**
 	 * Called when new data received
-	 * @param string New data
 	 * @return void
 	*/
-	public function stdin($buf) {
+	public function onRead() {
 		Timer::setTimeout($this->keepaliveTimer);
-		$this->buf .= $buf;
-		while (($line = $this->gets()) !== false) {
-			if ($line === $this->EOL) {
+		while (($line = $this->readline()) !== null) {
+			if ($line === '') {
 				continue;
 			}
 			if (strlen($line) > 512) {
@@ -356,7 +320,7 @@ class IRCBouncerConnection extends Connection {
 			$e = explode("\x20", $line, $max);
 			$i = 0;
 			$cmd = $e[$i++];
-			$args = array();
+			$args = [];
 
 			for ($s = min(sizeof($e), 14); $i < $s; ++$i) {
 				if ($e[$i][0] === ':') {

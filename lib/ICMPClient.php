@@ -15,26 +15,65 @@ class ICMPClient extends NetworkClient {
 	 */
 	
 	public function sendPing($host, $cb) {
-		$this->connectTo('raw:' . $host, 0, function($conn) use ($cb) {
+		$this->connect('raw://' . $host, function($conn) use ($cb) {
 			$conn->sendEcho($cb);
 		});
 	}	
 }
 
 class ICMPClientConnection extends NetworkClientConnection {
-	public $seq = 0;
+	/**
+	 * Packet sequence
+	 * @var integer
+	 */
+	protected $seq = 0;
 
-	public function sendEcho($cb) {
+	protected static $unreachableCodes = [
+		0x0 => 'netUnreachable',
+		0x1 => 'hostUnreachable',
+		0x2 => 'protocolUnreachable',
+		0x3 => 'portUnreachable',
+		0x4 => 'fragmentationNeeded',
+		0x5 => 'sourceRouteFailed',
+	];
+
+	/**
+	 * Enable bevConnect?
+	 * @var boolean
+	 */
+	public $bevConnectEnabled = false;
+
+	/* 
+	/**
+	 * Send echo-request
+	 * @param callable Callback
+	 * @param [string Data
+	 * @return void
+	 */
+	public function sendEcho($cb, $data = 'phpdaemon') {
 		++$this->seq;
-		
-		$data = 'phpdaemon';
-		$packet = pack('ccnnn', strlen($data), 0, 0, Daemon::$process->pid,	$this->seq) . $data;
+		if (strlen($data) % 2 !== 0) {
+			$data .= "\x00";
+		}
+		$packet = pack('ccnnn',
+			8, // type (c)
+			0, // code (c)
+			0, // checksum (n)
+			Daemon::$process->getPid(), // pid (n)
+			$this->seq  // seq (n)
+		) . $data;
 		$packet = substr_replace($packet, self::checksum($packet), 2, 2);
 		$this->write($packet);
-		$this->onResponse->push(array($cb, microtime(true)));
+		$this->onResponse->push([$cb, microtime(true)]);
 	}
 		
-	public static function checksum($data) {
+	/**
+	 * Build checksum
+	 * @static
+	 * @param string Source
+	 * @return string Checksum
+	 */
+	protected static function checksum($data) {
 		$bit = unpack('n*', $data);
 		$sum = array_sum($bit);
 		if (strlen($data) % 2) {
@@ -49,15 +88,31 @@ class ICMPClientConnection extends NetworkClientConnection {
 
 	/**
 	 * Called when new data received
-	 * @param string New data
 	 * @return void
 	 */
-	public function stdin($buf) {
-		// TODO: implement sequential packet exchange, incoming packet check
+	public function onRead() {
+		$packet = $this->read(1024);
+		$orig = $packet;
+		$type = Binary::getByte($packet);
+		$code = Binary::getByte($packet);
+		$checksum = Binary::getStrWord($packet);
+		$id = Binary::getWord($packet);
+		$seq = Binary::getWord($packet);
+		if ($checksum !== self::checksum(substr_replace($orig, "\x00\x00", 2, 2))) {
+			$status = 'badChecksum';
+		}
+		elseif ($type === 0x03) {
+			$status = isset(static::$unreachableCodes[$code]) ? static::$unreachableCodes[$code] : 'unk' .$code . 'unreachable';
+		} else {
+			$status = 'unknownType0x' . dechex($type);
+		}
 		while (!$this->onResponse->isEmpty()) {
 			$el = $this->onResponse->shift();
+			if ($el instanceof CallbackWrapper) {
+				$el = $el->unwrap();
+			}
 			list ($cb, $st) = $el;
-			call_user_func($cb, microtime(true) - $st);
+			call_user_func($cb, microtime(true) - $st, $status);
 		}
 		$this->finish();
 	}

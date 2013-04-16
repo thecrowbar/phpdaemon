@@ -14,7 +14,7 @@ class Timer {
 	public $lastTimeout; // Current timeout holder
 	public $finished = false; // Is the timer finished?
 	public $cb; // callback
-	public static $list = array(); // list of timers
+	public static $list = []; // list of timers
 	public $priority;
 	static $counter = 0;
 	
@@ -24,10 +24,7 @@ class Timer {
 		}
 		$this->id = $id;
 		$this->cb = $cb;
-		$this->ev = event_timer_new();
-		$timer = $this;
-		event_timer_set($this->ev, array($this, 'eventCall'));
-		event_base_set($this->ev, Daemon::$process->eventBase);
+		$this->ev = Event::timer(Daemon::$process->eventBase, [$this, 'eventCall']);
 		if ($priority !== null) {
 			$this->setPriority($priority);
 		}
@@ -36,8 +33,9 @@ class Timer {
 		}
 		Timer::$list[$id] = $this;
 	}
-	public function eventCall($fd, $flags, $arg) {
+	public function eventCall($arg) {
 		try {
+			//Daemon::log('cb - '.Debug::zdump($this->cb));
 			call_user_func($this->cb, $this);
 		} catch (Exception $e) {
 			Daemon::uncaughtExceptionHandler($e);
@@ -45,7 +43,7 @@ class Timer {
 	}
 	public function setPriority($priority) {
 		$this->priority = $priority;
-		event_priority_set($this->ev, $this->priority);
+		$this->ev->priority = $priority;
 	}
 	public static function add($cb, $timeout = null, $id = null, $priority = null) {
 		$obj = new self($cb, $timeout, $id, $priority);
@@ -72,10 +70,10 @@ class Timer {
 		if ($timeout !== null) {
 			$this->lastTimeout = $timeout;
 		}
-		event_timer_add($this->ev, $this->lastTimeout);
+		$this->ev->add($this->lastTimeout / 1e6);
 	}
 	public function cancel() {
-		event_timer_del($this->ev);
+		$this->ev->del();
 	}
 	public function finish(){
 		$this->free();
@@ -85,9 +83,9 @@ class Timer {
 	}
 	public function free() {
 		unset(Timer::$list[$this->id]);
-		if (is_resource($this->ev)) {
-			event_timer_del($this->ev);
-			event_free($this->ev);
+		if ($this->ev !== null) {
+			$this->ev->free();
+			$this->ev = null;
 		}
 	}
 }
@@ -95,5 +93,5 @@ function setTimeout($cb, $timeout = null, $id = null, $priority = null) {
 	return Timer::add($cb, $timeout, $id, $priority);
 }
 function clearTimeout($id) {
-	return Timer::remove($id);
+	Timer::remove($id);
 }

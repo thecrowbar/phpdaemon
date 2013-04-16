@@ -1,7 +1,6 @@
 <?php
-// @todo Make it more abstract
 /**
- * IOStram
+ * IOStream
  * 
  * @package Core
  *
@@ -9,52 +8,219 @@
  */
 abstract class IOStream {
 
-	public $buf = '';
-	public $EOL = "\n";
-
-	public $readPacketSize  = 8192;
-	public $buffer;
-	public $fd;
-	public $finished = false;
-	public $ready = false;
-	public $readLocked = false;
-	public $sending = true;
-	public $reading = false;
-	public $directInput = false; // do not use prebuffering of incoming data
-	public $directOutput = false; // do not use prebuffering of outgoing data
-	public $event;
-	protected $lowMark  = 1;         // initial value of the minimal amout of bytes in buffer
-	protected $highMark = 0xFFFF;  	// initial value of the maximum amout of bytes in buffer
-	public $priority;
-	public $inited = false;
-	public $state = 0;             // stream state of the connection (application protocol level)
-	const STATE_ROOT = 0;
-	public $onWriteOnce;
-	public $timeout = null;
-	public $url;
-	public $alive = false; // alive?
+	/**
+	 * Associated pool
+	 * @var object ConnectionPool
+	 */	
 	public $pool;
 
 	/**
+	 * EOL
+	 * @var string "\n"
+	 */	
+	protected $EOL = "\n";
+
+	/**
+	 * EOLS_* switch
+	 * @var integer
+	 */	
+	protected $EOLS;
+
+	/**
+	 * Number of bytes on each read() in default onRead() implementation
+	 * @deprecated Remove in 1.0 or earlier
+	 * @var integer 8192
+	 */	
+	protected $readPacketSize  = 8192;
+
+	/**
+	 * EventBufferEvent
+	 * @var object EventBufferEvent
+	 */	
+	protected $bev;
+
+	/**
+	 * File descriptor
+	 * @var resource|integer
+	 */	
+	protected $fd;
+
+	/**
+	 * Finished?
+	 * @var boolean
+	 */	
+	protected $finished = false;
+
+	/**
+	 * Ready? 
+	 * @var boolean
+	 */	
+	protected $ready = false;
+
+	/**
+	 * Writing?
+	 * @var boolean
+	 */	
+	protected $writing = true;
+
+	/**
+	 * Default low mark. Minimum number of bytes in buffer.
+	 * @var integer
+	 */
+	protected $lowMark  = 1;
+
+	/**
+	 * Default high mark. Maximum number of bytes in buffer.
+	 * @var integer
+	 */
+	protected $highMark = 0xFFFF;  	// initial value of the maximum amout of bytes in buffer
+
+	/**
+	 * Priority
+	 * @var integer
+	 */
+	protected $priority;
+
+	/**
+	 * Initialized?
+	 * @var boolean
+	 */	
+	protected $inited = false;
+
+	/**
+	 * Current state
+	 * @var integer
+	 */	
+	protected $state = 0;             // stream state of the connection (application protocol level)
+	const STATE_ROOT = 0;
+	const STATE_STANDBY = 0;
+
+	/**
+	 * Stack of callbacks called when writing is done
+	 * @var object StackCallbacks
+	 */
+	protected $onWriteOnce;
+
+	/**
+	 * Timeout
+	 * @var integer
+	 */	
+	protected $timeout = null;
+
+	/**
+	 * URL
+	 * @var string
+	 */	
+	protected $url;
+
+	/**
+	 * Alive?
+	 * @var boolean
+	 */	
+	protected $alive = false;
+
+	/**
+	 * Is bevConnect used?
+	 * @var boolean
+	 */	
+	protected $bevConnect = false;
+
+	/**
+	 * Should we can onReadEv() in next onWriteEv()?
+	 * @var boolean
+	 */	
+	protected $wRead = false;
+
+	/**
+	 * Freed?
+	 * @var boolean
+	 */	
+	protected $freed = false;
+
+	/**
+	 * Context
+	 * @var object
+	 */
+	protected $ctx;
+
+	/**
+	 * Context name
+	 * @var object
+	 */
+	protected $ctxname;
+
+	/**
+	 * Defines context-related flag
+	 * @var integer
+	 */
+	protected $ctxMode;
+
+	/**
+	 * SSL?
+	 * @var boolean
+	 */
+	protected $ssl = false;
+
+	/**
 	 * IOStream constructor
- 	 * @param resource File descriptor.
-	 * @param object AppInstance
+ 	 * @param resource File descriptor. Optional.
+	 * @param object Pool. Optional.
 	 * @return void
 	 */
 	public function __construct($fd = null, $pool = null) {
 		if ($pool) {
 			$this->pool = $pool;
-			$this->pool->attachConn($this);
+			$this->pool->attach($this);
 		}
 	
 		if ($fd !== null) {
 			$this->setFd($fd);
 		}
 
-		$this->onWriteOnce = new SplStack;
-		
+		if ($this->EOL === "\n") {
+			$this->EOLS = EventBuffer::EOL_LF;
+		}
+		elseif ($this->EOL === "\r\n") {
+			$this->EOLS = EventBuffer::EOL_CRLF;
+		} else {
+			$this->EOLS = EventBuffer::EOL_ANY;	
+		}
+
+		$this->onWriteOnce = new StackCallbacks;
 	}
 	
+	/**
+	 * Freed?
+	 * @return boolean
+	 */	
+	public function isFreed() {
+		return $this->freed;
+	}
+
+	/**
+	 * Finished?
+	 * @return boolean
+	 */	
+	public function isFinished() {
+		return $this->finished;
+	}
+
+	/**
+	 * Get EventBufferEvent
+	 * @return  EventBufferEvent
+	 */
+	public function getBev() {
+		return $this->bev;
+	}
+
+	/**
+	 * Get file descriptor
+	 * @return mixed File descriptor
+	 */	
+	public function getFd() {
+		return $this->fd;
+	}
+
 	/**
 	 * Set the size of data to read at each reading
 	 * @param integer Size
@@ -64,60 +230,84 @@ abstract class IOStream {
 		$this->readPacketSize = $n;
 		return $this;
 	}
-	
-	public function setOnRead($cb) {
-		$this->onRead = Closure::bind($cb, $this);
-		return $this;
+
+
+	/**
+	 * Sets context mode
+	 * @param object Context
+	 * @param integer Mode
+	 * @return void
+	 */
+
+	public function setContext($ctx, $mode) {
+		$this->ctx = $ctx;
+		$this->ctxMode = $mode;
 	}
-	public function setOnWrite($cb) {
-		$this->onWrite = Closure::bind($cb, $this);
-		return $this;
-	}
-	
-	public function setFd($fd) {
+
+	/**
+	 * Sets fd
+	 * @param mixed File descriptor
+	 * @param [object EventBufferEvent]
+	 * @return void
+	 */	
+
+	public function setFd($fd, $bev = null) {
 		$this->fd = $fd;
-		if ($this->directInput || $this->directOutput) {
-			$ev = event_new();
-			$flags = 0;
-			if ($this->directInput) {
-				$flags |= EV_READ;
-			}
-			if ($this->directOutput) {
-				$flags |= EV_WRITE;
-			}
-			if ($this->timeout !== null) {
-				$flags |= EV_TIMEOUT;
-			}
-			event_set($ev, $this->fd, $flags | EV_PERSIST, array($this, 'onDirectEvent'));
-			event_base_set($ev, Daemon::$process->eventBase);
-			if ($this->priority !== null) {
-				event_priority_set($ev, $this->priority);
-			}
-			if ($this->timeout !== null) {
-				event_add($ev, 1e6 * $this->timeout);
-			} else {
-				event_add($ev);
-			}
-			$this->event = $ev;
+		if ($this->fd === false) {
+			$this->finish();
+			return;
 		}
-		if (!$this->directOutput || !$this->directOutput) {
-			$this->buffer = event_buffer_new(
-					$this->fd,
-					$this->directInput ? null : array($this, 'onReadEvent'),
-					$this->directOutput ? null : array($this, 'onWriteEvent'),
-					array($this, 'onFailureEvent')
-			);
-			event_buffer_base_set($this->buffer, Daemon::$process->eventBase);
-			if ($this->priority !== null) {
-				event_buffer_priority_set($this->buffer, $this->priority);
+		if ($bev !== null) {
+			$this->bev = $bev;
+			$this->bev->setCallbacks([$this, 'onReadEv'], [$this, 'onWriteEv'], [$this, 'onStateEv']);
+			if (!$this->bev) {
+				return;
 			}
-			if ($this->timeout !== null) {
-				event_buffer_timeout_set($this->buffer, $this->timeout, $this->timeout);
+			$this->ready = true;
+			$this->alive = true;
+		} else {
+			$flags = !is_resource($this->fd) ? EventBufferEvent::OPT_CLOSE_ON_FREE : 0;
+			$flags |= EventBufferEvent::OPT_DEFER_CALLBACKS; /* buggy option */
+			if ($this->ctx) {
+				if ($this->ctx instanceof EventSslContext) {
+					$this->bev = EventBufferEvent::sslSocket(Daemon::$process->eventBase, $this->fd, $this->ctx, $this->ctxMode, $flags);
+					if ($this->bev) {
+						$this->bev->setCallbacks([$this, 'onReadEv'], [$this, 'onWriteEv'], [$this, 'onStateEv']);
+					}
+					$this->ssl = true;
+				} else {
+					$this->log('unsupported type of context: '.($this->ctx ? get_class($this->ctx) : 'undefined'));
+					return;
+				}
+			} else {
+				$this->bev = new EventBufferEvent(Daemon::$process->eventBase, $this->fd, $flags, [$this, 'onReadEv'], [$this, 'onWriteEv'], [$this, 'onStateEv']);
 			}
-			if (!$this->directInput) {
-				event_buffer_watermark_set($this->buffer, EV_READ, $this->lowMark, $this->highMark);
+			if (!$this->bev) {
+				return;
 			}
-			event_buffer_enable($this->buffer, EV_WRITE | EV_TIMEOUT | EV_PERSIST);
+		}
+		if ($this->priority !== null) {
+			$this->bev->priority = $this->priority;
+		}
+		if ($this->timeout !== null) {
+			$this->setTimeout($this->timeout);
+		}
+		if ($this->bevConnect && ($this->fd === null)) {
+			//$this->bev->connectHost(Daemon::$process->dnsBase, $this->hostReal, $this->port);
+			$this->bev->connect($this->addr);
+		}
+		if (!$this->bev) {
+			$this->finish();
+			return;
+		}
+		if (!$this->bev->enable(Event::READ | Event::WRITE | Event::TIMEOUT | Event::PERSIST)) {
+			$this->finish();
+			return;
+		}
+		$this->bev->setWatermark(Event::READ, $this->lowMark, $this->highMark);
+		init:
+		if ($this->keepalive) {
+			$this->setKeepalive(true);
 		}
 		if (!$this->inited) {
 			$this->inited = true;
@@ -125,39 +315,43 @@ abstract class IOStream {
 		}
 	}
 
-	public function setTimeout($timeout) {
-		$this->timeout = $timeout;
-		if ($this->timeout !== null) {
-			if ($this->buffer) {
-				event_buffer_timeout_set($this->buffer, $this->timeout, $this->timeout);
-			}
-		}
+	/**
+	 * Set timeout
+	 * @param integer Timeout
+	 * @return void
+	 */
+	public function setTimeout($rw) {
+		$this->setTimeouts($rw, $rw);
 	}
 
-	public function onDirectEvent($fd, $events, $arg) {
-		if (($events | EV_READ) === $events) {
-			$this->onReadEvent($fd);
-		}
-		if (($events | EV_WRITE) === $events) {
-			$this->onWriteEvent($fd);
-		}
-		if (($events | EV_TIMEOUT) === $events) {
-			$this->onFailureEvent($fd);
+	/**
+	 * Set timeouts
+	 * @param integer Read timeout in seconds
+	 * @param integer Write timeout in seconds
+	 * @return void
+	 */
+	public function setTimeouts($read, $write) {
+		$this->timeoutRead = $read;
+		$this->timeoutWrite = $write;
+		if ($this->bev) {
+			$this->bev->setTimeouts($this->timeoutRead, $this->timeoutWrite);
 		}
 	}
 	
+	/* Sets priority
+	 * @param integer Priority
+	 * @return void
+	 */
 	public function setPriority($p) {
 		$this->priority = $p;
-
-		if ($this->buffer !== null) {
-			event_buffer_priority_set($this->buffer, $p);
-		}
-		if ($this->event !== null) {
-			event_priority_set($this->event, $p);
-		}
-		
+		$this->bev->priority = $p;
 	}
 	
+	/* Sets watermark
+	 * @param integer|null Low
+	 * @param integer|null High
+	 * @return void
+	 */
 	public function setWatermark($low = null, $high = null) {
 		if ($low != null) {
 			$this->lowMark = $low;
@@ -165,21 +359,20 @@ abstract class IOStream {
 		if ($high != null) {
 		 	$this->highMark = $high;
 		}
-		event_buffer_watermark_set($this->buffer, EV_READ, $this->lowMark, $this->highMark);
+		$this->bev->setWatermark(Event::READ, $this->lowMark, $this->highMark);
 	}
 	
 	/**
 	 * Called when the session constructed
-	 * @todo +on & -> protected?
 	 * @return void
 	 */
-	public function init() {}
+	protected function init() {}
 
 	/**
 	 * Read a first line ended with \n from buffer, removes it from buffer and returns the line
 	 * @return string Line. Returns false when failed to get a line
 	 */
-	public function gets() {
+	public function gets() { // @TODO: deprecate in favor of readln
 		$p = strpos($this->buf, $this->EOL);
 
 		if ($p === false) {
@@ -193,7 +386,130 @@ abstract class IOStream {
 		return $r;
 	}
 
-	public function readFromBufExact($n) {
+	/* Reads line from buffer
+	 * @param [integer EOLS_*]
+	 * @return string|null
+	 */
+	public function readLine($eol = null) {
+		if (!isset($this->bev)) {
+			return null;
+		}
+		return $this->bev->input->readLine($eol ?: $this->EOLS);
+	}
+
+	/* Drains buffer
+	 * @param integer Numbers of bytes to drain
+	 * @return boolean Success
+	 */
+	public function drain($n) {
+		return $this->bev->input->drain($n);
+	}
+
+	/* Drains buffer it matches the string
+	 * @param string Data
+	 * @return boolean|null Success
+	 */
+	public function drainIfMatch($str) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		$in = $this->bev->input;
+		$l = strlen($str);
+		$ll = $in->length;
+		if ($ll === 0) {
+			return $l === 0 ? true : null;
+		}
+		if ($ll < $l) {
+			return $in->search(substr($str, 0, $ll)) === 0 ? null : false;
+		}
+		if ($ll === $l) {
+			if ($in->search($str) === 0) {
+				$in->drain($l);
+				return true;
+			}
+		}
+		elseif ($in->search($str, 0, $l) === 0) {
+			$in->drain($l);
+			return true;
+		}
+		return false;
+	}
+
+
+	/* Reads exact $n bytes of buffer without draining
+	 * @param integer Number of bytes to read
+	 * @return string|false
+	 */
+	public function lookExact($n, $o = 0) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		$data = $this->bev->input->substr($o, $n);
+		if (strlen($data) < $n) {
+			return false;
+		}
+		return $data;
+	}
+
+
+	/* Prepends data to input buffer
+	 * @param string Data
+	 * @return boolean Success
+	 */
+	public function prependInput($str) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		return $this->bev->input->prepend($str);
+	}
+
+	/* Prepends data to output buffer
+	 * @param string Data
+	 * @return boolean Success
+	 */
+	public function prependOutput($str) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		return $this->bev->output->prepend($str);
+	}
+
+	/* Read from buffer without draining
+	 * @param integer Number of bytes to read
+	 * @param integer [Offset
+	 * @return string|false
+	 */
+	public function look($n, $o = 0) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		return $this->bev->input->substr($o, $n);
+	}
+
+	/* Read from buffer without draining
+	 * @param Offset
+	 * @param [integer Number of bytes to read
+	 * @return string|false
+	 */
+	public function substr($o, $n = -1) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		$this->bev->input->substr($o, $n);
+		return $data;
+	}
+
+	/* Searches first occurence of the string in input buffer
+	 * @param string Needle
+	 * @param [integer Offset start]
+	 * @param [integer Offset end]
+	 * @return integer Position
+	 */
+	public function search($what, $start = 0, $end = -1) {
+		return $this->bev->input->search($what, $start, $end);
+	}
+
+	public function readFromBufExact($n) { // @TODO: deprecate
 		if ($n === 0) {
 			return '';
 		}
@@ -206,45 +522,92 @@ abstract class IOStream {
 		}
 	}
 
+	/* Reads exact $n bytes from buffer
+	 * @param integer Number of bytes to read
+	 * @return string|false
+	 */
+
+	public function readExact($n) {
+		if ($n === 0) {
+			return '';
+		}
+		if ($this->bev->input->length < $n) {
+			return false;
+		}
+		return $this->read($n);
+	}
+
+	/*
+	 * Returns length of input buffer
+	 * @return integer
+	 */
+	public function getInputLength() {
+		return $this->bev->input->length;
+	}
+
 	/**
 	 * Called when the worker is going to shutdown
 	 * @return boolean Ready to shutdown?
 	 */
 	public function gracefulShutdown() {
 		$this->finish();
-
 		return true;
 	}
 
-	/** 
-	 * Lock read
-	 * @todo add more description
-	 * @return void
+	/**
+	 * Freeze input
+	 * @param boolean At front. Default is true. If the front of a buffer is frozen, operations that drain data from the front of the buffer, or that prepend data to the buffer, will fail until it is unfrozen. If the back a buffer is frozen, operations that append data from the buffer will fail until it is unfrozen.
+	 * @return boolean Success
 	 */
-	public function lockRead() {
-		$this->readLocked = true;
+	public function freezeInput($at_front = false) {
+		if (isset($this->bev)) {
+			return $this->bev->input->freeze($at_front);
+		}
+		return false;
 	}
 
 	/**
-	 * Lock read
-	 * @todo more description
-	 * @return void
+	 * Unfreeze input
+	 * @param boolean At front. Default is true. If the front of a buffer is frozen, operations that drain data from the front of the buffer, or that prepend data to the buffer, will fail until it is unfrozen. If the back a buffer is frozen, operations that append data from the buffer will fail until it is unfrozen.
+	 * @return boolean Success
 	 */
-	public function unlockRead() {
-		if (!$this->readLocked) {
-			return;
+	public function unfreezeInput($at_front = false) {
+		if (isset($this->bev)) {
+			return $this->bev->input->unfreeze($at_front);
 		}
+		return false;
+	}
 
-		$this->readLocked = false;
-		$this->onReadEvent(null);
+	/**
+	 * Freeze output
+	 * @param boolean At front. Default is true. If the front of a buffer is frozen, operations that drain data from the front of the buffer, or that prepend data to the buffer, will fail until it is unfrozen. If the back a buffer is frozen, operations that append data from the buffer will fail until it is unfrozen.
+	 * @return boolean Success
+	 */
+	public function freezeOutput($at_front = true) {
+		if (isset($this->bev)) {
+			return $this->bev->output->unfreeze($at_front);
+		}
+		return false;
+	}
+
+	/**
+	 * Unfreeze output
+	 * @param boolean At front. Default is true. If the front of a buffer is frozen, operations that drain data from the front of the buffer, or that prepend data to the buffer, will fail until it is unfrozen. If the back a buffer is frozen, operations that append data from the buffer will fail until it is unfrozen.
+	 * @return boolean Success
+	 */
+	public function unfreezeOutput($at_front = true) {
+		if (isset($this->bev)) {
+			return $this->bev->output->unfreeze($at_front);
+		}
+		return false;
 	}
 
 	/**
 	 * Called when the connection is ready to accept new data
-	 * @todo protected?
 	 * @return void
 	 */
-	public function onWrite() { }
+	protected function onWrite() {}
+
 
 	/**
 	 * Send data to the connection. Note that it just writes to buffer that flushes at every baseloop
@@ -256,42 +619,40 @@ abstract class IOStream {
 			Daemon::log('Attempt to write to dead IOStream ('.get_class($this).')');
 			return false;
 		}
-		if (!$this->buffer) {
+		if (!isset($this->bev)) {
 			return false;
 		}
 		if (!strlen($data)) {
 			return true;
 		}
- 		$this->sending = true;
-		event_buffer_write($this->buffer, $data);
+ 		$this->writing = true;
+ 		Daemon::$noError = true;
+		if (!$this->bev->write($data) || !Daemon::$noError) {
+			$this->close();
+		}
 		return true;
 	}
 
 	/**
-	 * Send data and appending \n to connection. Note that it just writes to buffer that flushes at every baseloop
+	 * Send data and appending \n to connection. Note that it just writes to buffer flushed at every baseloop
 	 * @param string Data to send.
 	 * @return boolean Success.
 	 */
-	public function writeln($s) {
-		return $this->write($s . $this->EOL);
-	}
-	
-	/**
-	 * Send data to the connection. Note that it just writes to buffer that flushes at every baseloop
-	 * @param string Data to send.
-	 * @return boolean Success.
-	 */
-	public function send($s) {
-		return $this->write($s);
-	}
-
-	/**
-	 * Send data and appending \n to connection. Note that it just writes to buffer that flushes at every baseloop
-	 * @param string Data to send.
-	 * @return boolean Success.
-	 */
-	public function sendln($s) {
-		return $this->writeln($s);
+	public function writeln($data) {
+		if (!$this->alive) {
+			Daemon::log('Attempt to write to dead IOStream ('.get_class($this).')');
+			return false;
+		}
+		if (!isset($this->bev)) {
+			return false;
+		}
+		if (!strlen($data) && !strlen($this->EOL)) {
+			return true;
+		}
+ 		$this->writing = true;
+		$this->bev->write($data);
+		$this->bev->write($this->EOL);
+		return true;
 	}
 
 	/**
@@ -303,33 +664,26 @@ abstract class IOStream {
 			return;
 		}
 		$this->finished = true;
+		Daemon::$process->eventBase->stop();
 		$this->onFinish();
-		if ($this->pool) {
-			$this->pool->detach($this);
-		}
-		if (!$this->sending) {
+		if (!$this->writing) {
 			$this->close();
 		}
-		return true;
 	}
 
 	/**
 	 * Called when the session finished
-	 * @todo protected?
 	 * @return void
 	 */
-	public function onFinish() {
+	protected function onFinish() {
 	}
 
 	/**
 	 * Called when new data received
-	 * @todo +on & -> protected?
 	 * @param string New received data
 	 * @return void
 	 */
-	public function stdin($buf) {
-		$this->buf .= $buf;
-	}
+	protected function stdin($buf) {} // @TODO: deprecated, remove in 1.0
 	
 	/**
 	 * Close the connection
@@ -337,65 +691,78 @@ abstract class IOStream {
 	 * @return void
 	 */
 	public function close() {
-		if (isset($this->event)) {
-			event_del($this->event);
-			event_free($this->event);
-			$this->event = null;
+		if (!$this->freed) {
+			$this->freed = true;
+			if (isset($this->bev)) {
+				$this->bev->free();
+			}
+			$this->bev = null;
+			if (is_resource($this->fd)) {
+				socket_close($this->fd);
+			}
+			//Daemon::$process->eventBase->stop();
 		}
-		if (isset($this->buffer)) {
-			event_buffer_free($this->buffer);
-			$this->buffer = null;
-		}
-		if (isset($this->fd)) {
-			$this->closeFd();
+		if ($this->pool) {
+			$this->pool->detach($this);
 		}
 	}
-	
-	public function closeFd() {
-		fclose($this->fd);
-		$this->closed = true;
+
+
+	/**
+	 * Unsets pointers of associated EventBufferEvent and File descriptr
+	 * @return void
+	 */
+	public function unsetFd() {
+		$this->bev = null;
+		$this->fd = null;
+	}
+
+	protected function log($m) {
+		Daemon::log(get_class($this).': '.$m);
 	}
 	
 	/**
 	 * Called when the connection has got new data
-	 * @param resource Descriptor
-	 * @param mixed Optional. Attached variable
+	 * @param resource Bufferevent
 	 * @return void
 	 */
-	public function onReadEvent($stream, $arg = null) {
-		if ($this->readLocked) {
+	public function onReadEv($bev) {
+		if (Daemon::$config->logevents->value) {
+			$this->log(' onReadEv called');
+		}
+		if (!$this->ready) {
+			$this->wRead = true;
+			return;
+		}
+		if ($this->finished) {
 			return;
 		}
 		try {
-			if (isset($this->onRead)) {
-				$this->reading = !call_user_func($this->onRead);
-			} else {
-				$this->reading = !$this->onRead();
-			}
+			$this->onRead();
 		} catch (Exception $e) {
 			Daemon::uncaughtExceptionHandler($e);
 		}
 	}
-	
-	public function onRead() {
+
+	/**
+	 * Called when new data received
+	 * @return boolean
+	 */
+	protected function onRead() { // @todo: remove this default implementation in 1.0
 		while (($buf = $this->read($this->readPacketSize)) !== false) {
 			$this->stdin($buf);
-			if ($this->readLocked) {
-				return true;
-			}
 		}
-		return true;
 	}
 	
 	/**
 	 * Called when the stream is handshaked (at low-level), and peer is ready to recv. data
 	 * @return void
 	 */
-	public function onReady() {
+	protected function onReady() {
 	}
 	
 	public function onWriteOnce($cb) {
-		if (!$this->sending) {
+		if (!$this->writing) {
 			call_user_func($cb, $this);
 			return;
 		}
@@ -403,12 +770,15 @@ abstract class IOStream {
 	}
 	/**
 	 * Called when the connection is ready to accept new data
-	 * @param resource Descriptor
+	 * @param resource Bufferedevent
 	 * @param mixed Attached variable
 	 * @return void
 	 */
-	public function onWriteEvent($stream = null, $arg = null) {
-		$this->sending = false;
+	public function onWriteEv($bev) {
+		if (Daemon::$config->logevents->value) {
+			Daemon::log(get_class().' onWriteEv called');
+		}
+		$this->writing = false;
 		if ($this->finished) {
 			$this->close();
 			return;
@@ -417,7 +787,7 @@ abstract class IOStream {
 			$this->ready = true;
 			while (!$this->onWriteOnce->isEmpty()) {
 				try {
-					call_user_func($this->onWriteOnce->pop(), $this);
+					$this->onWriteOnce->executeOne($this);
 				} catch (Exception $e) {
 					Daemon::uncaughtExceptionHandler($e);
 				}
@@ -426,62 +796,99 @@ abstract class IOStream {
 				}
 			}
 			$this->alive = true;
-			if (isset($this->buffer)) {
-				event_buffer_enable($this->buffer, $this->directInput ? (EV_WRITE | EV_TIMEOUT | EV_PERSIST) : (EV_READ | EV_WRITE | EV_TIMEOUT | EV_PERSIST));
-			}
-			try {			
+			try {
 				$this->onReady();
+				if ($this->wRead) {
+					$this->wRead = false;
+					$this->onRead();
+				}
 			} catch (Exception $e) {
 				Daemon::uncaughtExceptionHandler($e);
 			}
 		} else {
-			while (!$this->onWriteOnce->isEmpty()) {
-				call_user_func($this->onWriteOnce->pop(), $this);
-			}
+			$this->onWriteOnce->executeAll($this);
 		}
 		try {
-			if (isset($this->onWrite)) {
-				call_user_func($this->onWrite, $this);
-			} else {
-				$this->onWrite();
-			}
+			$this->onWrite();
 		} catch (Exception $e) {
 			Daemon::uncaughtExceptionHandler($e);
 		}
 	}
 	
 	/**
-	 * Called when the connection failed
-	 * @param resource Descriptor
+	 * Called when the connection state changed
+	 * @param resource Bufferevent
+	 * @param int Events
 	 * @param mixed Attached variable
 	 * @return void
 	 */
-	public function onFailureEvent($stream, $arg = null) {
-		try {
-			$this->close();
-			if ($this->finished) {
-				return;
+	public function onStateEv($bev, $events) {
+		if ($events & EventBufferEvent::CONNECTED) {
+			$this->onWriteEv($bev);
+		} elseif ($events & (EventBufferEvent::ERROR | EventBufferEvent::EOF)) {
+			try {
+				if ($this->finished) {
+					return;
+				}
+				if ($events & EventBufferEvent::ERROR) {
+					$errno = EventUtil::getLastSocketErrno();
+					if ($errno !== 0) {
+						trigger_error('Socket error #' . $errno . ':' . EventUtil::getLastSocketError(), E_USER_NOTICE);
+					}
+					if ($this->ssl && $this->bev) {
+						while ($err = $this->bev->sslError()) {
+							trigger_error('EventBufferEvent SSL error: ' . $err . PHP_EOL, E_USER_NOTICE);
+						}
+					}
+				}
+				$this->finished = true;
+				$this->onFinish();
+				$this->close();
+			} catch (Exception $e) {
+				Daemon::uncaughtExceptionHandler($e);
 			}
-			$this->finished = true;
-			$this->onFinish();
-			if ($this->pool) {
-				$this->pool->detach($this);
-			}
-		} catch (Exception $e) {
-			Daemon::uncaughtExceptionHandler($e);
 		}
-		event_base_loopexit(Daemon::$process->eventBase);
 	}
-	
+
+	/**
+	 * Moves arbitrary number of bytes from input buffer to given buffer
+	 * @param EventBuffer Destination nuffer
+	 * @param integer Max. number of bytes to move
+	 * @return integer 
+	 */
+	public function moveToBuffer(EventBuffer $dest, $n) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		return $dest->appendFrom($this->bev->input, $n);
+	}
+
+	/**
+	 * Moves arbitrary number of bytes from given buffer to output buffer
+	 * @param EventBuffer Source buffer
+	 * @param integer Max. number of bytes to move
+	 * @return integer 
+	 */
+	public function writeFromBuffer(EventBuffer $src, $n) {
+		if (!isset($this->bev)) {
+			return false;
+		}
+		return $this->bev->output->appendFrom($src, $n);
+	}
+
 	/**
 	 * Read data from the connection's buffer
 	 * @param integer Max. number of bytes to read
 	 * @return string Readed data
 	 */
 	public function read($n) {
-	}
-	
-	public function __destruct() {
-		$this->close();
+		if (!isset($this->bev)) {
+			return false;
+		}
+		$read = $this->bev->read($n);
+		if ($read === null) {
+			return false;
+		}
+		return $read;
 	}
 }

@@ -7,6 +7,10 @@
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
 class FastCGIServer extends NetworkServer {
+
+	/* Variables order
+	 * @var string "GPC"
+	 */
 	public $variablesOrder;
 	
 	/**
@@ -20,7 +24,7 @@ class FastCGIServer extends NetworkServer {
 			'expose'                  => 1,
 			'auto-read-body-file'     => 1,
 			'listen'                  =>  '127.0.0.1,unix:/tmp/phpdaemon.fcgi.sock',
-			'listen-port'             => 9000,
+			'port'      		      => 9000,
 			'allowed-clients'         => '127.0.0.1',
 			'send-file'               => 0,
 			'send-file-dir'           => '/dev/shm',
@@ -29,6 +33,7 @@ class FastCGIServer extends NetworkServer {
 			'keepalive'               => new Daemon_ConfigEntryTime('0s'),
 			'chunksize'               => new Daemon_ConfigEntrySize('8k'),
 			'defaultcharset'		=> 'utf-8',
+			'upload-max-size'		=> new Daemon_ConfigEntrySize(ini_get('upload_max_filesize')),
 		);
 	}
 	

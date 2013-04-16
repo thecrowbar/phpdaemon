@@ -49,6 +49,32 @@ class Debug {
 
 		return $dump;
 	}
+
+	public static function refcount(&$var) {
+    	ob_start();
+    	debug_zval_dump(array(&$var));
+    	$c = preg_replace("/^.+?refcount\((\d+)\).+$/ms", '$1', substr(ob_get_contents(), 24), 1) - 4;
+    	ob_end_clean();
+    	return $c;
+	}
+
+
+	/**
+	 * Wrapper of debug_zval_dump
+	 * @return string Result of debug_zval_dump()
+	 */
+	public static function zdump() {
+		ob_start();
+
+		foreach (func_get_args() as $v) {
+			debug_zval_dump($v);
+		}
+
+		$dump = ob_get_contents();
+		ob_end_clean();
+
+		return $dump;
+	}
 	
 	/**
 	 * Returns textual backtrace.
@@ -59,15 +85,21 @@ class Debug {
 			try {
 				throw new Exception;
 			} catch (Exception $e) {
-				return $e->getTraceAsString();
+				$trace = $e->getTraceAsString();
+				$e = explode("\n", $trace);
+				array_shift($e);
+				array_shift($e);
+				return implode("\n", $e);
 			}
 		}
 		ob_start();
 		debug_print_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
-		$dump = ob_get_contents();
+		$trace = ob_get_contents();
 		ob_end_clean();
 
-		return $dump;
+		$e = explode("\n", $trace);
+		array_shift($e);
+		return implode("\n", $e);
 	}
 
 }

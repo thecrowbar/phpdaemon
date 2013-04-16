@@ -8,7 +8,12 @@
  */
 class FlashPolicyServer extends NetworkServer {
 
-	public $policyData;          // Cached policy-file.
+	/**
+	 * Cached policy file contents
+	 * @var string
+	 */
+	public $policyData;
+
 	/**
 	 * Setting default config options
 	 * Overriden from ConnectionPool::getConfigDefaults
@@ -23,7 +28,9 @@ class FlashPolicyServer extends NetworkServer {
 		);
 	}
 	
-	public function onReady() {}
+	public function onReady() {
+		$this->onConfigUpdated();
+	}
 
 	/**
 	 * Called when worker is going to update configuration.
@@ -31,11 +38,13 @@ class FlashPolicyServer extends NetworkServer {
 	 */
 	public function onConfigUpdated() {
 		parent::onConfigUpdated();
-		$pool = $this;
-		FS::readfile($this->config->file->value, function($file, $data) use ($pool) {
-			$pool->policyData = $data;
-			$pool->enable();
-		});
+		if (Daemon::$process instanceof Daemon_WorkerThread) {
+			$pool = $this;
+			FS::readfile($this->config->file->value, function($file, $data) use ($pool) {
+				$pool->policyData = $data;
+				$pool->enable();
+			});
+		}
 	}
 	
 }
@@ -45,21 +54,20 @@ class FlashPolicyServerConnection extends Connection {
 	protected $highMark = 23;
 	/**
 	 * Called when new data received.
-	 * @param string New data.
 	 * @return void
 	 */
-	public function stdin($buf) {
-		if ($buf === "<policy-file-request/>\x00") {
+	public function onRead() {
+		if (false === ($pct = $this->readExact($this->lowMark))) {
+			return; // not readed yet
+		}
+		if ($pct === "<policy-file-request/>\x00") {
 			if ($this->pool->policyData) {
-				$this->write($this->pool->policyData . "\x00");
+				$this->write($p = $this->pool->policyData . "\x00");
 			} else {
 				$this->write("<error/>\x00");
 			}
-			$this->finish();
 		}
-		else {
-			$this->finish();
-		}
+		$this->finish();
 	}
 	
 }

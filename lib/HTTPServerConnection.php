@@ -8,199 +8,269 @@
  */
 
 class HTTPServerConnection extends Connection {
-	protected $initialLowMark  = 1;         // initial value of the minimal amout of bytes in buffer
-	protected $initialHighMark = 0xFFFFFF;  // initial value of the maximum amout of bytes in buffer
-	public $timeout = 45;
+	protected $initialLowMark = 1;
+	protected $initialHighMark = 8192;  // initial value of the maximum amout of bytes in buffer
+	protected $timeout = 45;
 
-	public $req;
+	protected $req;
 	
-	const STATE_HEADERS = 1;
-	const STATE_CONTENT = 2;
+	const STATE_FIRSTLINE = 1;
+	const STATE_HEADERS = 2;
+	const STATE_CONTENT = 3;
+	const STATE_PROCESSING = 4;
+		
 
+	protected $EOL = "\r\n";
+	protected $currentHeader;
+
+	protected $policyReqNotFound = false;
+
+	/**
+	 * Check if Sendfile is supported here.
+	 * @return boolean Succes
+	 */
+	public function checkSendfileCap() { // @DISCUSS
+		return true;
+	}
+
+	/**
+	 * Check if Chunked encoding is supported here.
+	 * @return boolean Succes
+	 */
+	public function checkChunkedEncCap() { // @DISCUSS
+		return true;
+	}
 	
-	public $sendfileCap = true; // we can use sendfile() with this kind of connection
-	public $bufHead = '';
+	/**
+	 * Constructor
+	 * @return void
+	 */
+	protected function init() {
+		$this->ctime = microtime(true);
+	}
+
+	/**
+	 * Read first line of HTTP request
+	 * @return boolean Success
+	 * @return void
+	 */
+	protected function httpReadFirstline() {
+		if (($l = $this->readline()) === null) {
+			return null;
+		}
+		$e = explode(' ', $l);
+		$u = isset($e[1]) ? parse_url($e[1]) : false;
+		if ($u === false) {
+			$this->badRequest($this->req);
+			return false;
+		}
+		if (!isset($u['path'])) {
+			$u['path'] = null;
+		}
+		if (isset($u['host'])) {
+			$this->req->attrs->server['HTTP_HOST'] = $u['host'];	
+		}
+		$srv = &$this->req->attrs->server;
+		$srv['REQUEST_METHOD'] = $e[0];
+		$srv['REQUEST_TIME'] = time();
+		$srv['REQUEST_TIME_FLOAT'] = microtime(true);
+		$srv['REQUEST_URI'] = $u['path'] . (isset($u['query']) ? '?' . $u['query'] : '');
+		$srv['DOCUMENT_URI'] = $u['path'];
+		$srv['PHP_SELF'] = $u['path'];
+		$srv['QUERY_STRING'] = isset($u['query']) ? $u['query'] : null;
+		$srv['SCRIPT_NAME'] = $srv['DOCUMENT_URI'] = isset($u['path']) ? $u['path'] : '/';
+		$srv['SERVER_PROTOCOL'] = isset($e[2]) ? $e[2] : 'HTTP/1.1';
+		$srv['REMOTE_ADDR'] = $this->host;
+		$srv['REMOTE_PORT'] = $this->port;
+		return true;
+	}
+
+	/**
+	 * Read headers line-by-line
+	 * @return boolean Success
+	 * @return void
+	 */
+	protected function httpReadHeaders() {
+		while (($l = $this->readLine()) !== null) {
+			if ($l === '') {
+				return true;
+			}
+			$e = explode(': ', $l);
+			if (isset($e[1])) {
+				$this->currentHeader = 'HTTP_' . strtoupper(strtr($e[0], HTTPRequest::$htr));
+				$this->req->attrs->server[$this->currentHeader] = $e[1];
+			}
+			elseif (($e[0][0] === "\t" || $e[0][0] === "\x20") && $this->currentHeader) {
+				 // multiline header continued
+					$this->req->attrs->server[$this->currentHeader] .= $e[0];
+			}
+			else {
+				// whatever client speaks is not HTTP anymore
+				$this->badRequest($this->req);
+				return false;
+			}
+		}
+		return null;
+	}
+
+
+	/**
+	 * Creates new Request object
+	 * @return object
+	 */
+	protected function newRequest() {
+		$req = new stdClass;
+		$req->attrs = new stdClass();
+		$req->attrs->request = [];
+		$req->attrs->get = [];
+		$req->attrs->post = [];
+		$req->attrs->cookie = [];
+		$req->attrs->server = [];
+		$req->attrs->files = [];
+		$req->attrs->session = null;
+		$req->attrs->paramsDone = false;
+		$req->attrs->inputDone = false;
+		$req->attrs->input = new HTTPRequestInput;
+		$req->attrs->inputReaded = 0;
+		$req->attrs->chunked = false;
+		$req->upstream = $this;
+		return $req;
+	}
+
+
+	/**
+	 * Process HTTP headers
+	 * @return boolean Success
+	 */
+	protected function httpProcessHeaders() {
+		$this->req->attrs->paramsDone = true;
+		if (
+			isset($this->req->attrs->server['HTTP_CONNECTION']) && preg_match('~(?:^|\W)Upgrade(?:\W|$)~i', $this->req->attrs->server['HTTP_CONNECTION'])
+			&& isset($this->req->attrs->server['HTTP_UPGRADE']) && (strtolower($this->req->attrs->server['HTTP_UPGRADE']) === 'websocket')
+		) {
+			if ($this->pool->WS) {
+				$this->pool->WS->inheritFromRequest($this->req, $this);
+			}
+			return false;
+		}
+
+		$this->req = Daemon::$appResolver->getRequest($this->req, $this, isset($this->pool->config->responder->value) ? $this->pool->config->responder->value : null);
+		if ($this->req instanceof stdClass) {
+			$this->endRequest($this->req, 0, 0);
+			return false;
+		} else {
+			if ($this->pool->config->sendfile->value && (!$this->pool->config->sendfileonlybycommand->value	|| isset($this->req->attrs->server['USE_SENDFILE'])) 
+				&& !isset($this->req->attrs->server['DONT_USE_SENDFILE'])
+			) {
+				$fn = FS::tempnam($this->pool->config->sendfiledir->value, $this->pool->config->sendfileprefix->value);
+				$req = $this->req;
+				FS::open($fn, 'wb', function ($file) use ($req) {
+					$req->sendfp = $file;
+				});
+				$this->req->header('X-Sendfile: ' . $fn);
+			}
+		}
+		return true;
+	}
 
 	/**
 	 * Called when new data received.
 	 * @return void
 	 */
 	
-	public function onRead() {
-		start:
-		$buf = $this->bufHead . $this->read($this->readPacketSize);
-		$this->bufHead = '';
-
-		if ($this->state === self::STATE_ROOT) {
-			if (strlen($buf) === 0) {
+	protected function onRead() {
+		if (!$this->policyReqNotFound) {
+			$d = $this->drainIfMatch("<policy-file-request/>\x00");
+			if ($d === null) { // partially match
 				return;
 			}
-
-			if ($this->req !== null) { // we have to wait the current request.
-				$this->bufHead = $buf;
-				return;
-			}
-
-			if (strpos($buf, "<policy-file-request/>\x00") !== false) {
-				if (
-					($FP = FlashPolicyServer::getInstance()) 
-					&& $FP->policyData
-				) {
+			if ($d) {
+				if (($FP = FlashPolicyServer::getInstance($this->pool->config->fpsname->value, false)) && $FP->policyData) {
 					$this->write($FP->policyData . "\x00");
 				}
 				$this->finish();
 				return;
+			} else {
+				$this->policyReqNotFound = true;
 			}
-			$this->state = self::STATE_HEADERS;
-
-			$req = new stdClass();
-			$req->attrs = new stdClass();
-			$req->attrs->request = array();
-			$req->attrs->get = array();
-			$req->attrs->post = array();
-			$req->attrs->cookie = array();
-			$req->attrs->server = array();
-			$req->attrs->files = array();
-			$req->attrs->session = null;
-			$req->attrs->params_done = false;
-			$req->attrs->stdin_done = false;
-			$req->attrs->stdinbuf = '';
-			$req->attrs->stdinlen = 0;
-			$req->attrs->chunked = false;
-			$req->conn = $this;
-
-			$this->req = $req;
+		}
+		start:
+		if ($this->finished) {
+			return;
+		}
+		if ($this->state === self::STATE_ROOT) {
+			if ($this->req !== null) { // we have to wait the current request.
+				return;
+			}
+			if (!$this->req = $this->newRequest()) {
+				$this->finish();
+				return;
+			}
+			$this->state = self::STATE_FIRSTLINE;
 
 		} else {
-			if (!$this->req) {
-				Daemon::log('Unexpected input (HTTP request).');
+			if (!$this->req || $this->state === self::STATE_PROCESSING) {
+				if (isset($this->bev) && ($this->bev->input->length > 0)) {
+					Daemon::log('Unexpected input (HTTP request, '.$this->state.'): '.json_encode($this->read($this->bev->input->length)));
+				}
 				return;
 			}
-			$req = $this->req;
 		}
+
+		if ($this->state === self::STATE_FIRSTLINE) {
+			if (!$this->httpReadFirstline()) {
+				return;
+			}
+			$this->state = self::STATE_HEADERS;
+		}		
 
 		if ($this->state === self::STATE_HEADERS) {
-			if (($p = strpos($buf, "\r\n\r\n")) !== false) {
-				$headers = binarySubstr($buf, 0, $p);
-				$headersArray = explode("\r\n", $headers);
-				$buf = binarySubstr($buf, $p + 4);
-				$command = explode(' ', $headersArray[0]);
-				$u = isset($command[1]) ? parse_url($command[1]) : false;
-				if ($u === false) {
-					$this->badRequest($req);
-					return;
-				}
-
-				$req->attrs->server['REQUEST_METHOD'] = $command[0];
-				$req->attrs->server['REQUEST_TIME'] = time();
-				$req->attrs->server['REQUEST_TIME_FLOAT'] = microtime(true);
-				$req->attrs->server['REQUEST_URI'] = $u['path'] . (isset($u['query']) ? '?' . $u['query'] : '');
-				$req->attrs->server['DOCUMENT_URI'] = $u['path'];
-				$req->attrs->server['PHP_SELF'] = $u['path'];
-				$req->attrs->server['QUERY_STRING'] = isset($u['query']) ? $u['query'] : null;
-				$req->attrs->server['SCRIPT_NAME'] = $req->attrs->server['DOCUMENT_URI'] = isset($u['path']) ? $u['path'] : '/';
-				$req->attrs->server['SERVER_PROTOCOL'] = isset($command[2]) ? $command[2] : 'HTTP/1.1';
-
-				$req->attrs->server['REMOTE_ADDR'] = $this->addr;
-				$req->attrs->server['REMOTE_PORT'] = $this->port;
-
-				for ($i = 1, $n = sizeof($headersArray); $i < $n; ++$i) {
-					$e = explode(': ', $headersArray[$i]);
-					if (isset($e[1])) {
-						$req->attrs->server['HTTP_' . strtoupper(strtr($e[0], HTTPRequest::$htr))] = $e[1];
-					}
-				}
-				if (!isset($req->attrs->server['HTTP_CONTENT_LENGTH'])) {
-					$req->attrs->server['HTTP_CONTENT_LENGTH'] = 0;
-				}
-				if (isset($u['host'])) {
-					$req->attrs->server['HTTP_HOST'] = $u['host'];	
-				}
-
-				$req->attrs->params_done = true;
-
-				if (
-					isset($req->attrs->server['HTTP_CONNECTION']) 
-					&& preg_match('~(?:^|\W)Upgrade(?:\W|$)~i', $req->attrs->server['HTTP_CONNECTION'])
-					&& isset($req->attrs->server['HTTP_UPGRADE'])
-					&& (strtolower($req->attrs->server['HTTP_UPGRADE']) === 'websocket')
-				) {
-					if ($this->pool->WS) {
-						$this->pool->WS->inheritFromRequest($req, $this->pool);
-						return;
-					} else {
-						$this->finish();
-						return;
-					}
-				} else {
-					$req = Daemon::$appResolver->getRequest($req, $this->pool, isset($this->pool->config->responder->value) ? $this->pool->config->responder->value : null);
-					$req->conn = $this;
-					$this->req = $req;
-				}
-
-				if ($req instanceof stdClass) {
-					$this->endRequest($req, 0, 0);
-				} else {
-					if ($this->pool->config->sendfile->value && (!$this->pool->config->sendfileonlybycommand->value	|| isset($req->attrs->server['USE_SENDFILE'])) 
-						&& !isset($req->attrs->server['DONT_USE_SENDFILE'])
-					) {
-						$fn = FS::tempnam($this->pool->config->sendfiledir->value, $this->pool->config->sendfileprefix->value);
-						FS::open($fn, 'wb', function ($file) use ($req) {
-							$req->sendfp = $file;
-						});
-						$req->header('X-Sendfile: ' . $fn);
-					}
-					$this->state = self::STATE_CONTENT;
-				}
-			}
-			else {
-				$this->bufHead = $buf;
-				return; // not enough data
-			}
-		}
-		if ($this->state === self::STATE_CONTENT) {
-			$e = $req->attrs->server['HTTP_CONTENT_LENGTH'] - strlen($buf) - $req->attrs->stdinlen;
-			if ($e < 0) {
-				$this->bufHead = binarySubstr($buf, $e);
-				$buf = binarySubstr($buf, 0, $e);
-			}
-			$req->stdin($buf);
-			$buf = '';
-			if ($req->attrs->stdin_done) {
-				$this->state = self::STATE_ROOT;
-			} else {
+			if (!$this->httpReadHeaders()) {
 				return;
 			}
+			if (!$this->httpProcessHeaders()) {
+				$this->finish();
+				return;
+			}
+			$this->state = self::STATE_CONTENT;
 		}
-
-		if ($req->attrs->stdin_done && $req->attrs->params_done) {
-			if ($this->pool->variablesOrder === null) {
-				$req->attrs->request = $req->attrs->get + $req->attrs->post + $req->attrs->cookie;
-			} else {
-				for ($i = 0, $s = strlen($this->pool->variablesOrder); $i < $s; ++$i) {
-					$char = $this->pool->variablesOrder[$i];
-					if ($char == 'G') {
-						$req->attrs->request += $req->attrs->get;
-					}
-					elseif ($char == 'P') {
-						$req->attrs->request += $req->attrs->post;
-					}
-					elseif ($char == 'C') {
-						$req->attrs->request += $req->attrs->cookie;
+		if ($this->state === self::STATE_CONTENT) {
+			if (!$this->req->attrs->input) {
+				return;
+			}
+			$this->req->attrs->input->readFromBuffer($this->bev->input);
+			if (!$this->req || !$this->req->attrs->input->isEOF()) {
+				return;
+			}
+			$this->state = self::STATE_PROCESSING;
+			$this->freezeInput();
+			if ($this->req->attrs->inputDone && $this->req->attrs->paramsDone) {
+				if ($this->pool->variablesOrder === null) {
+					$this->req->attrs->request = $this->req->attrs->get + $this->req->attrs->post + $this->req->attrs->cookie;
+				} else {
+					for ($i = 0, $s = strlen($this->pool->variablesOrder); $i < $s; ++$i) {
+						$char = $this->pool->variablesOrder[$i];
+						if ($char == 'G') {
+							$this->req->attrs->request += $this->req->attrs->get;
+						}
+						elseif ($char == 'P') {
+							$this->req->attrs->request += $this->req->attrs->post;
+						}
+						elseif ($char == 'C') {
+							$this->req->attrs->request += $this->req->attrs->cookie;
+						}
 					}
 				}
+				Daemon::$process->timeLastReq = time();
 			}
-			Daemon::$process->timeLastReq = time();
 		}
-		
-		goto start;
 	}
 
 	/**
 	 * Handles the output from downstream requests.
 	 * @param object Request.
 	 * @param string The output.
-	 * @return boolean Success.
+	 * @return boolean Success
 	 */
 	public function requestOut($req, $s) {
 		if ($this->write($s) === false) {
@@ -229,20 +299,46 @@ class HTTPServerConnection extends Connection {
 			) {
 				$this->finish();
 			}
+			else {
+				$this->finish();
+			}
 		}
 		$this->freeRequest($req);
 	}
+
+	/**
+	 * Frees this request
+	 * @return void
+	 */
 	public function freeRequest($req) {
+		if ($this->req === null || $this->req !== $req) {
+			return;
+		}
 		$this->req = null;
-		setTimeout(array($this, 'onReadTimer'), 0);
+		$this->state = self::STATE_ROOT;
+		$this->unfreezeInput();
 	}
-	public function onReadTimer($timer) {
-		$this->onRead();
-		$timer->free();
+
+
+	/**
+	 * Called when connection is finished
+	 * @return void
+	 */
+	public function onFinish() {
+		if ($this->req !== null && $this->req instanceof Request) {
+			if (!$this->req->isFinished()) {
+				$this->req->abort();
+			}
+		}
 	}
+
+	/**
+	 * Send Bad request
+	 * @return void
+	 */
 	public function badRequest($req) {
-		$this->write('400 Bad Request\r\n\r\n<html><head><title>400 Bad Request</title></head><body bgcolor="white"><center><h1>400 Bad Request</h1></center></body></html>');
+		$this->state = self::STATE_ROOT;
+		$this->write("400 Bad Request\r\n\r\n<html><head><title>400 Bad Request</title></head><body bgcolor=\"white\"><center><h1>400 Bad Request</h1></center></body></html>");
 		$this->finish();
 	}
 }
-

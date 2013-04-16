@@ -1,60 +1,59 @@
 <?php
+
+/**
+ * Default application resolver
+ *
+ * @package Core
+ * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
+ */
 class MyAppResolver extends AppResolver {
-
-	public $defaultApp = 'Example';
-	public $appDir;
-	public $appPreload = array(); // [appName1 => numberOfInstances1], ...
-	public $appPreloadPrivileged = array();
-	//public $htdocs_root = '/var/www/';
-	public $htdocs_root = '/opt/phpdaemon/static';
-	public $default_document = 'index.html';
-
 	/**
-	 * @method getRequestRoute
+	 * Location of static files to be served
+	 * @var String
+	 */
+	public $htdocs = 'static';
+	
+	/**
+	 * Routes incoming request to related application. Method is for overloading.	
 	 * @param object Request.
 	 * @param object AppInstance of Upstream.
-	 * @description Routes incoming request to related application. Method is for overloading.
 	 * @return string Application's name.
 	 */
 	public function getRequestRoute($req, $upstream) {
-		if (preg_match('~^/(WebSocketOverCOMET|Example|Example.*|Monoloop|FirstData|Vendor)/~', $req->attrs->server['DOCUMENT_URI'], $m)) {
+
+		/*
+			This method should return application name to handle incoming request ($req).
+		*/
+
+		if (preg_match('~^/(WebSocketOverCOMET|Example|ExampleWithMongo|RealTimeTrans|Vendor)/~', $req->attrs->server['DOCUMENT_URI'], $m)) {
 			return $m[1];
 		}
- 
-		$host = preg_replace('~^www\.~','',basename($req->attrs->server['HTTP_HOST']));
-		$req->attrs->server['GEOIP_COUNTRY_CODE'] = 'RU';
 		
+		//Daemon::log('Script CWD:'.getcwd());
+		
+		// check if we should server static content
+		if (is_dir(getcwd().'/'.$this->htdocs)) {
+			$spath = getcwd().'/'.$this->htdocs.'/';
+			//Daemon::log('We have a htdocs directory:'.$spath);
+			preg_match('~^/(.*)$~', $req->attrs->server['DOCUMENT_URI'], $m);
+			//Daemon::log('preg_match:'.print_r($m, true));
+			$req->attrs->server['FR_PATH'] = $spath.$m[1];
+			$req->attrs->server['FR_AUTOINDEX'] = TRUE;
+			//Daemon::log('About to return FileReader! $req->attrs->server:'.print_r($req->attrs->server, true));
+			return 'FileReader';
+		}
+  
+		/* Example
+		$host = basename($req->attrs->server['HTTP_HOST']);
 
-		preg_match('~^/(.*)$~', $req->attrs->server['DOCUMENT_URI'], $m);
-		$rpath = urldecode($m[1]);
-		if (strlen($rpath) < 1) {
-			$rpath .= $this->default_document;
-		}
-		$rpath = str_replace('../','/',$rpath);
-		$rpath = str_replace('/..','/',$rpath);
-			
-		//$path = $this->htdocs_root.$host.'/'.$rpath;
-		$path = $this->htdocs_root.'/'.$rpath;
-		//$path = '/opt/phpdaemon/'.$rpath;
-			
-		if ($host === 'wakephp.ipq.co')	{
-			$path = '/home/web/WakePHP/static/'.$rpath;
-		  if ($rpath == '' || !file_exists($path)) {
-				return 'WakePHP';
-			}
-		}
-		elseif ($host === 'hagent.phpdaemon.net')	{
-			$path = '/home/web/HAgent/static/'.$rpath;
-		  if ($rpath == '' || !file_exists($path)) {
-				return 'HAgent';
-			}
-		}
-		elseif (!is_dir('/home/web/domains/' .$host)) {$host = 'loopback.su';}
-		
-		$req->attrs->server['FR_PATH'] = $path;			
-		$req->attrs->server['FR_URL'] = 'file://'.$path;			
-		$req->attrs->server['FR_AUTOINDEX'] = TRUE;
-		return 'FileReader';
+		if (is_dir('/home/web/domains/' . basename($host))) {
+			preg_match('~^/(.*)$~', $req->attrs->server['DOCUMENT_URI'], $m);
+			$req->attrs->server['FR_PATH'] = '/home/web/domains/'.$host.'/'.$m[1];
+			$req->attrs->server['FR_AUTOINDEX'] = TRUE;
+			return 'FileReader';
+		} */
 	}
+	
 }
+
 return new MyAppResolver;

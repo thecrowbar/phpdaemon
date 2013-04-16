@@ -9,17 +9,25 @@
  */
 class Daemon_Bootstrap {
 
-	public static $pid;
+	/**
+	 * Master process ID
+	 * @var integer
+	 */
+	protected static $pid;
 
-	private static $commands = array(
-		'start', 'stop', 'hardstop', 'update', 'reload', 'restart', 'hardrestart', 'fullstatus', 'status', 'configtest', 'log'
+	/**
+	 * List of commands
+	 * @var array
+	 */
+	protected static $commands = array(
+		'start', 'stop', 'hardstop', 'update', 'reload', 'restart', 'hardrestart', 'fullstatus', 'status', 'configtest', 'log', 'runworker'
 	);
 
 	/**
 	 * Command-line params
 	 * @var array
 	 */
-	private static $params = array(
+	protected static $params = array(
 		'pid-file' => array(
 			'val' => '/path/to/pid-file',
 			'desc' => 'Pid file'
@@ -66,6 +74,10 @@ class Daemon_Bootstrap {
 	 * @return void
 	 */
 	public static function init($configFile = null) {
+		if (!version_compare(PHP_VERSION, '5.4.0', '>=')) {
+			Daemon::log('PHP >= 5.4.0 required.');
+			return;
+		}
 		Daemon::initSettings();
 		FS::init();
 		Daemon::$runName = basename($_SERVER['argv'][0]);
@@ -110,15 +122,11 @@ class Daemon_Bootstrap {
 		if (!Daemon::$config->loadCmdLineArgs($args)) {
 			$error = true;
 		}
-		
+
 		if (!Daemon::loadConfig(Daemon::$config->configfile->value)) {
 			$error = true;
 		}
 
-		if (version_compare(PHP_VERSION, '5.3.0', '>=') === 1) {
-			Daemon::log('PHP >= 5.3.0 required.');
-			$error = true;
-		}
 
 		if ('log' === $runmode) {
 			passthru('tail -n '.$n.' -f '.escapeshellarg(Daemon::$config->logstorage->value));
@@ -130,7 +138,7 @@ class Daemon_Bootstrap {
 		}
 		
 		if (isset(Daemon::$config->locale->value) && Daemon::$config->locale->value !== '') {
-			setlocale(LC_ALL,explode(',', Daemon::$config->locale->value));
+			setlocale(LC_ALL,array_map('trim', explode(',', Daemon::$config->locale->value)));
 		}
 		
 		if (
@@ -150,8 +158,15 @@ class Daemon_Bootstrap {
 			$error = true;
 		}
 	
-		if (!is_callable('event_base_new')) {
-			Daemon::log('[EMERG] libevent extension not found. You have to install libevent from pecl (http://pecl.php.net/package/libevent). `svn checkout http://svn.php.net/repository/pecl/libevent pecl-libevent`.');
+		if (extension_loaded('libevent')) {
+			Daemon::log('[EMERG] libevent extension found. You have to remove libevent.so extension.');
+			$error = true;
+		}
+
+		$eventVer = '1.6.0';
+		$eventVerType = 'stable';
+		if (!Daemon::loadModuleIfAbsent('event', $eventVer . '-' . $eventVerType)) {
+			Daemon::log('[EMERG] event extension >= ' . $eventVer . ' not found (or OUTDATED). You have to install it. `pecl install http://pecl.php.net/get/event-' . $eventVer . '.tgz`');
 			$error = true;
 		}
 	
@@ -253,7 +268,9 @@ class Daemon_Bootstrap {
 		
 		if (
 			isset(Daemon::$config->minspareworkers->value) 
+			&& Daemon::$config->minspareworkers->value > 0
 			&& isset(Daemon::$config->maxspareworkers->value)
+			&& Daemon::$config->maxspareworkers->value > 0
 		) {
 			if (Daemon::$config->minspareworkers->value > Daemon::$config->maxspareworkers->value) {
 				Daemon::log('\'minspareworkers\' cannot be greater than \'maxspareworkers\'.');
@@ -278,11 +295,19 @@ class Daemon_Bootstrap {
 				exit(6);
 			}
 		}
+		elseif ($runmode === 'runworker') {
+			if ($error === FALSE) {
+				Daemon_Bootstrap::runworker();
+			}
+			else {
+				exit(6);
+			}
+		}
 		elseif (
-			$runmode == 'status' 
-			|| $runmode == 'fullstatus'
+			$runmode === 'status' 
+			|| $runmode === 'fullstatus'
 		) {
-			$status = Daemon_Bootstrap::$pid && posix_kill(Daemon_Bootstrap::$pid, SIGTTIN);
+			$status = Daemon_Bootstrap::$pid && Thread::ifExistsByPid(Daemon_Bootstrap::$pid);
 			echo '[STATUS] phpDaemon ' . Daemon::$version . ' is ' . ($status ? 'running' : 'NOT running') . ' (' . Daemon::$config->pidfile->value . ").\n";
 
 			if (
@@ -291,7 +316,7 @@ class Daemon_Bootstrap {
 			) {
 				echo 'Uptime: ' . Daemon::date_period_text(filemtime(Daemon::$config->pidfile->value), time()) . "\n";
 
-				Daemon::$shm_wstate = Daemon::shmop_open(Daemon::$config->pidfile->value, 0, 'wstate', FALSE);
+				Daemon::$shm_wstate = new ShmEntity(Daemon::$config->pidfile->value, Daemon::SHM_WSTATE_SIZE, 'wstate');
 
 				$stat = Daemon::getStateOfWorkers();
 
@@ -388,14 +413,14 @@ class Daemon_Bootstrap {
 			if ($ok) {
 				$i = 0;
 		
-				while ($r = posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)) {
+				while ($r = Thread::ifExistsByPid(Daemon_Bootstrap::$pid)) {
 					usleep(500000);
 		
 					if ($i == 9) {
 						echo "\nphpDaemon master-process hasn't finished. Sending SIGKILL... ";
 						posix_kill(Daemon_Bootstrap::$pid, SIGKILL);
-
-						if (!posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)) {
+						sleep(0.2);
+						if (!Thread::ifExistsByPid(Daemon_Bootstrap::$pid)) {
 							echo " Oh, his blood is on my hands :'(";
 						} else {
 							echo "ERROR: Process alive. Permissions?";
@@ -413,11 +438,19 @@ class Daemon_Bootstrap {
 		
 	}
 
-	private static function printUsage() {
-		echo 'usage: ' . Daemon::$runName . " (start|(hard)stop|update|reload|(hard)restart|fullstatus|status|configtest|log|help) ...\n";
+	/**
+	 * Print ussage
+	 * @return void
+	 */
+	protected static function printUsage() {
+		echo 'usage: ' . Daemon::$runName . " (start|(hard)stop|update|reload|(hard)restart|fullstatus|status|configtest|log|runworker|help) ...\n";
 	}
 
-	private static function printHelp() {
+	/**
+	 * Print help
+	 * @return void
+	 */
+	protected static function printHelp() {
 		$term = new Terminal();
 
 		echo 'phpDaemon ' . Daemon::$version . ". http://phpdaemon.net\n";
@@ -445,13 +478,13 @@ class Daemon_Bootstrap {
 	}
 	
 	/**
-	 * Start script.
+	 * Start master.
 	 * @return void
 	 */
 	public static function start() {
 		if (
 			Daemon_Bootstrap::$pid 
-			&& posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)
+			&& Thread::ifExistsByPid(Daemon_Bootstrap::$pid)
 		) {
 			Daemon::log('[START] phpDaemon with pid-file \'' . Daemon::$config->pidfile->value . '\' is running already (PID ' . Daemon_Bootstrap::$pid . ')');
 			exit(6);
@@ -460,6 +493,16 @@ class Daemon_Bootstrap {
 		Daemon::init();
 		$pid = Daemon::spawnMaster();
 		file_put_contents(Daemon::$config->pidfile->value, $pid);
+	}
+
+	/**
+	 * Runworker.
+	 * @return void
+	 */
+	public static function runworker() {
+		Daemon::log('PLEASE USE runworker COMMAND ONLY FOR DEBUGGING PURPOSES.');
+		Daemon::init();
+		Daemon::runWorker();
 	}
 
 	/**
@@ -479,7 +522,7 @@ class Daemon_Bootstrap {
 		) {
 			$i = 0;
 
-			while ($r = posix_kill(Daemon_Bootstrap::$pid, SIGTTIN)) {
+			while ($r = Thread::ifExistsByPid(Daemon_Bootstrap::$pid)) {
 				usleep(10000);
 				++$i;
 			}
@@ -489,13 +532,13 @@ class Daemon_Bootstrap {
 	/**
 	 * Parses command-line arguments.
 	 * @param array $_SERVER['argv']
-	 * @return void
+	 * @return array Arguments
 	 */
 	public static function getArgs($args) {
-		$out = array();
+		$out = [];
 		$last_arg = NULL;
 		
-		for($i = 1, $il = sizeof($args); $i < $il; ++$i) {
+		for ($i = 1, $il = sizeof($args); $i < $il; ++$i) {
 			if (preg_match('~^--(.+)~', $args[$i], $match)) {
 				$parts = explode('=', $match[1]);
 				$key = preg_replace('~[^a-z0-9]+~', '', $parts[0]);

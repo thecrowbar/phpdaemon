@@ -1,14 +1,15 @@
 <?php
-class MongoClientCursor {
+class MongoClientAsyncCursor {
 	public $id;                 // Cursor's ID.
 	public $col;                // Collection's name.
-	public $items = array();    // Array of objects
+	public $items = [];    // Array of objects
 	public $item;               // Current object
 	public $conn;     	        // Network connection
 	public $finished = false;   // Is this cursor finished?
 	public $failure = false;    // Is this query failured?
 	public $await = false;      // awaitCapable?
 	public $destroyed = false;  // Is this cursor destroyed?
+	public $parseOplog = false;
 
 	/**
 	 * Constructor
@@ -29,12 +30,12 @@ class MongoClientCursor {
 	 * @return void
 	 */
 	public function getMore($number = 0) {
-		//if ($this->tailable && $this->await) {return true;}
+		/*if ($this->tailable && $this->await) {
+			return;
+		}*/
 		if (binarySubstr($this->id, 0, 1) === 'c') {
 			$this->conn->pool->getMore($this->col, binarySubstr($this->id, 1), $number, $this->conn);
 		}
-
-		return true;
 	}
 
 	/**
@@ -43,8 +44,7 @@ class MongoClientCursor {
 	 */
 	public function destroy() {
 		$this->destroyed = true;
-		unset($this->conn->pool->cursors[$this->id]);
-	
+		unset($this->conn->cursors[$this->id]);
 		return true;
 	}
 

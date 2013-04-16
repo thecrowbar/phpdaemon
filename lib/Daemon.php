@@ -13,6 +13,22 @@ class Daemon {
 	const SUPPORT_RUNKIT_MODIFY          = 1;
 	const SUPPORT_RUNKIT_INTERNAL_MODIFY = 2;
 	const SUPPORT_RUNKIT_IMPORT 		 = 3;
+	const WSTATE_IDLE = 1;
+	const WSTATE_BUSY = 2;
+	const WSTATE_SHUTDOWN = 3;
+	const WSTATE_PREINIT = 4;
+	const WSTATE_WAITINIT = 5;
+	const WSTATE_INIT = 6;
+
+	public static $wstateRev = [
+		1 => 'IDLE',
+		2 => 'BUSY',
+		3 => 'SHUTDOWN',
+		4 => 'PREINIT',
+		5 => 'WAITINIT',
+		6 => 'INIT',
+	];
+	const SHM_WSTATE_SIZE = 1024;
 
 	/**
 	 * Debug flag. Enables extra output
@@ -44,27 +60,35 @@ class Daemon {
 	 * Supported things array	
 	 * @var string	
 	 */	
-	private static $support = array();
+	protected static $support = array();
 	
 	public static $process;
 	public static $appResolver;
 	public static $appInstances = array();
 	public static $req;
 	public static $context;
-	private static $workers;
-	private static $masters;
-	private static $initservervar;
+	protected static $workers;
+	protected static $masters;
+	protected static $initservervar;
 	public static $shm_wstate;
-	private static $shm_wstate_size = 5120;
-	public static $reusePort;
+
+	/**
+	 * Сurrently re-using bound ports across multiple processes is available
+	 * only in BSD flavour operating systems via SO_REUSEPORT socket option
+	 * @var boolean
+	 */
+	public static $reusePort = false;
 	public static $compatMode = FALSE;
 	public static $runName = 'phpdaemon';
 	public static $config;
 	public static $appResolverPath;
 	public static $restrictErrorControl = false;
 	public static $defaultErrorLevel;
+	public static $runworkerMode = false; // @TODO: refactoring
 
 	public static $obInStack = false; // whether if the current execution stack contains ob-filter
+
+	public static $noError = false;
 	/**
 	 * Loads default setting.
 	 * @return void
@@ -74,33 +98,50 @@ class Daemon {
 
 		Daemon::$config = new Daemon_Config;
 
-		// currently re-using listener ports across multiple processes is available
-		// only in BSD flavour operating systems via SO_REUSEPORT socket option
-		Daemon::$reusePort = 1 === preg_match("~BSD~i", php_uname('s'));
+		if (preg_match('~BSD~i', php_uname('s'))) {
+			Daemon::$reusePort = true;
+		}
 		
 		if (Daemon::$reusePort && !defined("SO_REUSEPORT"))
-		    define("SO_REUSEPORT", 0x200);	// FIXME: this is a BSD-only hack
+		    define("SO_REUSEPORT", 0x200);	// @TODO: FIXME: this is a BSD-only hack
 	}
 
-	public static function loadModuleIfAbsent($mod) {
-		if (extension_loaded($mod)) {
+	public static function loadModuleIfAbsent($mod, $version = null, $compare = '>=') {
+		if (!extension_loaded($mod)) {
+			if (!get_cfg_var('enable_dl')) {
+				return false;
+			}
+			if (!@dl(basename($mod) . '.so')) {
+				return false;
+			}
+		}
+		if (!$version) {
 			return true;
 		}
-		if (!get_cfg_var('enable_dl')) {
+		try {
+			$ext = new ReflectionExtension($mod);
+			return version_compare($ext->getVersion(), $version, $compare);
+		} catch (ReflectionException $e) {
 			return false;
 		}
-		return @dl(basename($mod) . '.so');
 	}
 
 	public static function callAutoGC() {
+		if (self::checkAutoGC()) {
+			gc_collect_cycles();
+		}
+	}
+
+	public static function checkAutoGC() {
 		if (
 			(Daemon::$config->autogc->value > 0) 
 			&& (Daemon::$process->counterGC > 0) 
-			&& (Daemon::$process->counterGC % Daemon::$config->autogc->value === 0)
+			&& (Daemon::$process->counterGC >= Daemon::$config->autogc->value)
 		) {
-			gc_collect_cycles();
-			++Daemon::$process->counterGC;
+			Daemon::$process->counterGC = 0;
+			return true;
 		}
+		return false;
 	}
 
 	/**
@@ -139,6 +180,7 @@ class Daemon {
 	}
 
 	public static function errorHandler($errno, $errstr, $errfile, $errline, $errcontext) {
+		Daemon::$noError = 0;
 		$l = error_reporting();
 		if ($l === 0) {
 			if (!Daemon::$restrictErrorControl) {
@@ -187,7 +229,7 @@ class Daemon {
 
 		Daemon::$initservervar = $_SERVER;
 		Daemon::$masters = new ThreadCollection;
-		Daemon::$shm_wstate = Daemon::shmop_open(Daemon::$config->pidfile->value, Daemon::$shm_wstate_size, 'wstate');
+		Daemon::$shm_wstate = new ShmEntity(Daemon::$config->pidfile->value, Daemon::SHM_WSTATE_SIZE, 'wstate', true);
 		Daemon::openLogs();
 	}
 	
@@ -205,7 +247,7 @@ class Daemon {
 	 * Method to fill $support array
 	 * @return void
 	 */
-	private static function checkSupports() {
+	protected static function checkSupports() {
 		if (is_callable('runkit_lint_file')) {
 			self::$support[self::SUPPORT_RUNKIT_SANDBOX] = true;
 		}
@@ -265,41 +307,42 @@ class Daemon {
 		}
 
 		if (!Daemon::$config->loadCmdLineArgs($args)) {
-			$error = TRUE;
+			$error = true;
 		}
 
-		if (
-			isset(Daemon::$config->configfile->value) 
-			&& !Daemon::loadConfig(Daemon::$config->configfile->value)
-		) {
-			$error = TRUE;
+		if (isset(Daemon::$config->configfile->value) && !Daemon::loadConfig(Daemon::$config->configfile->value)) {
+			$error = true;
 		}
 		
 		if (!isset(Daemon::$config->path->value)) {
 			exit('\'path\' is not defined');
 		}
 
+		if ($error) {
+			exit;
+		}
+
 		$appResolver = require Daemon::$config->path->value;
 		$appResolver->init();
 
-		$req = new stdClass();
-		$req->attrs = new stdClass();
+		$req = new stdClass;
+		$req->attrs = new stdClass;
 		$req->attrs->request = $_REQUEST;
 		$req->attrs->get = $_GET;
 		$req->attrs->post = $_REQUEST;
 		$req->attrs->cookie = $_REQUEST;
 		$req->attrs->server = $_SERVER;
 		$req->attrs->files = $_FILES;
-		$req->attrs->session = isset($_SESSION)?$_SESSION:NULL;
+		$req->attrs->session = isset($_SESSION) ? $_SESSION : null;
 		$req->attrs->connId = 1;
 		$req->attrs->trole = 'RESPONDER';
 		$req->attrs->flags = 0;
 		$req->attrs->id = 1;
-		$req->attrs->params_done = TRUE;
-		$req->attrs->stdin_done = TRUE;
+		$req->attrs->paramsDone = true;
+		$req->attrs->inputDone = true;
 		$req = $appResolver->getRequest($req);
 
-		 while (TRUE) {
+		 while (true) {
 			$ret = $req->call();
 
 			if ($ret === 1) {
@@ -315,29 +358,18 @@ class Daemon {
 	 */
 	public static function loadConfig($paths) {
 		$apaths = explode(';', $paths);
-		$found = false;
-
 		foreach($apaths as $path) {
 			if (is_file($p = realpath($path))) {
-				$found = true;
-
 				$ext = strtolower(pathinfo($p, PATHINFO_EXTENSION));
-
-				if ($ext == 'conf') {
+				if ($ext === 'conf') {
 					return Daemon::$config->loadFile($p);
 				} else {
 					Daemon::log('Config file \'' . $p . '\' has unsupported file extension.');
-					return FALSE;
+					return false;
 				}
-
-				return true;
 			}
 		}
-
-		if (!$found) {
-			Daemon::log('Config file not found in \'' . $paths . '\'.');
-		}
-
+		Daemon::log('Config file not found in \'' . $paths . '\'.');
 		return false;
 	}
 
@@ -372,9 +404,8 @@ class Daemon {
 	 * Get state of workers.
 	 * @return array - information.
 	 */
-	// @TODO: get rid of magic numbers in status (use constants)
-	public static function getStateOfWorkers($master = NULL) {
-		static $bufsize = 1024;
+	public static function getStateOfWorkers() {
+		$bufsize = min(1024, Daemon::SHM_WSTATE_SIZE);
 		$offset = 0;
 		
 		$stat = array(
@@ -385,110 +416,67 @@ class Daemon {
 			'preinit'  => 0,
 			'waitinit' => 0,
 			'init'     => 0,
+			'reloading' => 0,
 		);
 
+		Daemon::$shm_wstate->openAll();
 		$c = 0;
-
-		while ($offset < Daemon::$shm_wstate_size) {
-			$buf = shmop_read(Daemon::$shm_wstate, $offset, $bufsize);
-
-			for ($i = 0; $i < $bufsize; ++$i) {
-				$code = ord($buf[$i]);
-
-				if ($code >= 100) {
-					 // reloaded (shutdown)
-					$code -= 100;
-
-					if ($master !== NULL) {
-						$master->reloadWorker($offset + $i + 1);
+		foreach (Daemon::$shm_wstate->getSegments() as $shm) {
+			while ($offset < Daemon::SHM_WSTATE_SIZE) {
+				$buf = shmop_read($shm, $offset, $bufsize);
+				for ($i = 0, $buflen = strlen($buf); $i < $buflen; ++$i) {
+					$code = ord($buf[$i]);
+					if ($code >= 100) {
+						 // reloaded (shutdown)
+						$code -= 100;
+						if ($code !== Daemon::WSTATE_SHUTDOWN) {
+							if (Daemon::$process instanceof Daemon_MasterThread) {
+								Daemon::$process->reloadWorker($offset + $i + 1);
+								++$stat['reloading'];
+								continue;
+							}
+						}
 					}
+					if ($code === 0) {
+						break 2;
+					}
+					elseif ($code === Daemon::WSTATE_IDLE) {
+						// idle
+						++$stat['alive'];
+						++$stat['idle'];
+					}
+					elseif ($code === Daemon::WSTATE_BUSY) {
+						// busy
+						++$stat['alive'];
+						++$stat['busy'];
+					}
+					elseif ($code === Daemon::WSTATE_SHUTDOWN) { 
+						// shutdown
+						++$stat['shutdown'];
+					}
+					elseif ($code === Daemon::WSTATE_PREINIT) {
+						// pre-init
+						++$stat['alive'];
+						++$stat['preinit'];
+						++$stat['idle'];
+					}
+					elseif ($code === Daemon::WSTATE_WAITINIT) {
+						// wait-init
+						++$stat['alive'];
+						++$stat['waitinit'];
+						++$stat['idle'];
+					}
+					elseif ($code === Daemon::WSTATE_INIT) { // init
+						++$stat['alive'];
+						++$stat['init'];
+						++$stat['idle'];
+					}
+					++$c;
 				}
-
-				if ($code === 0) {
-					break 2;
-				}
-				elseif ($code === 1) {
-					// idle
-					++$stat['alive'];
-					++$stat['idle'];
-				}
-				elseif ($code === 2) {
-					// busy
-					++$stat['alive'];
-					++$stat['busy'];
-				}
-				elseif ($code === 3) { 
-					// shutdown
-					++$stat['shutdown'];
-				}
-				elseif ($code === 4) {
-					// pre-init
-					++$stat['alive'];
-					++$stat['preinit'];
-					++$stat['idle'];
-				}
-				elseif ($code === 5) {
-					// wait-init
-					++$stat['alive'];
-					++$stat['waitinit'];
-					++$stat['idle'];
-				}
-				elseif ($code === 6) { // init
-					++$stat['alive'];
-					++$stat['init'];
-					++$stat['idle'];
-				}
-
-				++$c;
+				$offset += $bufsize;
 			}
-
-			$offset += $bufsize;
 		}
-
 		return $stat;
-	}
-
-	/**
-	 * Opens segment of shared memory.
-	 * @param string Path to file.
-	 * @param int Size of segment.
-	 * @param string Name of segment.
-	 * @param boolean Whether to create if it doesn't exist.
-	 * @return int Resource ID.
-	 */
-	public static function shmop_open($path, $size, $name, $create = TRUE) {
-		if (
-			$create
-			&& !touch($path)
-		) {
-			Daemon::log('Couldn\'t touch IPC file \'' . $path . '\'.');
-			exit(0);
-		}
-
-		if (($key = ftok($path,'t')) === FALSE) {
-			Daemon::log('Couldn\'t ftok() IPC file \'' . $path . '\'.');
-			exit(0);
-		}
-
-		if (!$create) {
-			$shm = shmop_open($key, 'w', 0, 0);
-		} else {
-			$shm = @shmop_open($key, 'w', 0, 0);
-
-			if ($shm) {
-				shmop_delete($shm);
-				shmop_close($shm);
-			}
-
-			$shm = shmop_open($key, 'c', 0755, $size);
-		}
-
-		if (!$shm) {
-			Daemon::log('Couldn\'t open IPC-' . $name . ' shared memory segment (key=' . $key . ', size=' . $size . ', uid=' . posix_getuid() . ').');
-			exit(0);
-		}
-
-		return $shm;
 	}
 
 	/**
@@ -526,12 +514,18 @@ class Daemon {
 		Daemon::$masters->push($thread = new Daemon_MasterThread);
 		$thread->start();
 
-		if (-1 === $thread->pid) {
+		if (-1 === $thread->getPid()) {
 			Daemon::log('could not start master');
 			exit(0);
 		}
 
-		return $thread->pid;
+		return $thread->getPid();
+	}
+
+	public static function runWorker() {
+		Daemon::$runworkerMode = true;
+		$thread = new Daemon_WorkerThread;
+		$thread();
 	}
 
 	/**
@@ -549,13 +543,13 @@ class Daemon {
 		$st = explode('-', $st);
 
 		if (
-			(is_int($fin)) 
+			(is_int ($fin)) 
 			|| (ctype_digit($fin))
 		) {
 			$fin = date('d-m-Y-H-i-s', $fin);
 		}
 
-		$fin = explode('-', $fin);
+		$fin = array_map('intval', explode('-', $fin));
 
 		if (($seconds = $fin[5] - $st[5]) < 0) {
 			$fin[4]--; 
@@ -574,7 +568,7 @@ class Daemon {
 
 		if (($days = $fin[0] - $st[0]) < 0) {
 			$fin[1]--;
-			$days += date('t', mktime(1, 0, 0, $fin[1], $fin[0], $fin[2]));
+			$days += (int) date('t', mktime(1, 0, 0, $fin[1], $fin[0], $fin[2]));
 		}
 
 		if (($months = $fin[1] - $st[1]) < 0) {
@@ -584,7 +578,7 @@ class Daemon {
 
 		$years = $fin[2] - $st[2];
 
-		return array($seconds, $minutes, $hours, $days, $months, $years);
+		return [$seconds, $minutes, $hours, $days, $months, $years];
 	}
 
 	/**

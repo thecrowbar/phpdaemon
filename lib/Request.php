@@ -7,28 +7,87 @@
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
-class Request {
- 
-	const INTERRUPT = 3; // alias of STATE_SLEEPING
-	const DONE      = 0; // alias of STATE_FINISHED
- 
-	const STATE_FINISHED = 0;
-	const STATE_ALIVE    = 1;
-	const STATE_RUNNING  = 2;
-	const STATE_SLEEPING = 3;
-	public $conn;
+class Request { 
+
+	const STATE_FINISHED = 1;
+	const STATE_WAITING  = 2;
+	const STATE_RUNNING  = 3;
+
+	/**
+	 * Related Application instance
+	 * @var AppInstance
+	 */
 	public $appInstance;
-	public $aborted = FALSE;
-	public $state = self::STATE_ALIVE;
-	public $codepoint;
-	public $sendfp;
+
+	/**
+	 * Is this request aborted?
+	 * @var boolean
+	 */
+	protected $aborted = false;
+
+	/**
+	 * State
+	 * @var integer (self::STATE_*)
+	 */
+	protected $state = self::STATE_WAITING;
+
+	/**
+	 * Attributes
+	 * @var StdCLass
+	 */
 	public $attrs;
-	public $shutdownFuncs = array();
-	public $running = FALSE;
-	public $upstream;
-	public $ev;
-	public $sleepTime = 1000;
-	public $priority = null;
+
+	/**
+	 * Registered shutdown functions
+	 * @var array
+	 */
+	protected $shutdownFuncs = [];
+
+	/**
+	 * Is this request running?
+	 * @var boolean
+	 */
+	protected $running = false;
+
+	/**
+	 * Upstream
+	 * @var object
+	 */
+	protected $upstream;
+
+	/**
+	 * Event
+	 * @var object
+	 */
+	protected $ev;
+
+	/**
+	 * Current sleep() time
+	 * @var float
+	 */
+	protected $sleepTime = 0;
+
+	/**
+	 * Priority
+	 * @var integer
+	 */
+	protected $priority = null;
+
+
+	/**
+	 * Current code point
+	 * @var mixed
+	 */
+	protected $codepoint;
+
+	/**
+	 * Log
+	 * @param string Message
+	 * @return void
+	 */
+	public function log($msg) {
+		Daemon::log(get_class($this) . ': ' . $msg);
+	}
  
 	/**
 	 * Constructor
@@ -37,23 +96,44 @@ class Request {
 	 * @param object Source request.
 	 * @return void
 	 */
-	public function __construct($appInstance, $upstream, $parent = NULL) {
+	public function __construct($appInstance, $upstream, $parent = null) {
 		$this->appInstance = $appInstance;
 		$this->upstream = $upstream;
-		$this->ev = event_timer_new();
-		event_timer_set($this->ev, array($this, 'eventCall'));
-		event_base_set($this->ev, Daemon::$process->eventBase);
+		$this->ev = Event::timer(Daemon::$process->eventBase, [$this, 'eventCall']);
 		if ($this->priority !== null) {
-			event_priority_set($this->ev, $this->priority);
+			$this->ev->priority = $this->priority;
 		}
-		event_timer_add($this->ev, 1);
-				
-		$this->preinit($parent);
 		$this->onWakeup();
+		$this->preinit($parent);
 		$this->init();
 		$this->onSleep();
 	}
  	
+
+ 	/**
+	 * Is this request aborted?
+	 * @return boolean
+	 */
+ 	public function isAborted() {
+ 		return $this->aborted;
+ 	}
+
+ 	/**
+	 * Is this request finished?
+	 * @return boolean
+	 */
+ 	public function isFinished() {
+ 		return $this->state === static::STATE_FINISHED;
+ 	}
+
+	/**
+	 * Is this request running?
+	 * @return boolean
+	 */
+ 	public function isRunning() {
+ 		return $this->running;
+ 	}
+
  	/**
 	 * Output some data
 	 * @param string String to out
@@ -69,97 +149,80 @@ class Request {
 	public function run() {}
 	
 	/**
-	 * @todo description is missing
+	 * Event handler of Request, called by Evtimer
+	 * @return void
 	 */
-	public function eventCall($fd, $flags, $arg) {		
-		if ($this->state === Request::STATE_SLEEPING) {
-			$this->state = Request::STATE_ALIVE;
-		}
+	public function eventCall($arg) {
 		try {
-			$ret = $this->call();
+			if ($this->state === Request::STATE_FINISHED) {
+				$this->finish();
+				$this->free();
+				return;
+			}
+			$this->state = Request::STATE_RUNNING;
+			$this->onWakeup();
+			$throw = false;
+ 			try {
+				$ret = $this->run(); 
+				if (($ret === Request::STATE_FINISHED) || ($ret === null)) {
+					$this->finish();
+				}
+				elseif ($ret === Request::STATE_WAITING) {
+					$this->state = $ret;
+				}
+			} catch (RequestSleepException $e) {
+				$this->state = Request::STATE_WAITING;
+			} catch (RequestTerminatedException $e) {
+				$this->state = Request::STATE_FINISHED;
+			} catch (Exception $e) {
+				$throw = true;
+			}
+			if ($this->state === Request::STATE_FINISHED) {
+				$this->finish();
+			}
+			$this->onSleep();
+			if ($throw) {
+				throw $e;
+			}
+
 		} catch (Exception $e) {
 			Daemon::uncaughtExceptionHandler($e);
 			$this->finish();
 			return;
 		}
-		if ($ret === Request::STATE_FINISHED) {		
+		handleStatus:
+		if ($this->state === Request::STATE_FINISHED) {		
 			$this->free();
+		}
+		elseif ($this->state === REQUEST::STATE_WAITING) {
+			$this->ev->add($this->sleepTime);
+		}
+	}
 
-		}
-		elseif ($ret === REQUEST::STATE_SLEEPING) {
-			event_add($this->ev, $this->sleepTime);
-		}
-	}
+	/**
+	 * Frees the request
+	 * @return void
+	 */
 	public function free() {
-		if (is_resource($this->ev)) {
-			event_timer_del($this->ev);
-			event_free($this->ev);
+		if ($this->ev) {
+			$this->ev->free();
+			$this->ev = null;
 		}
-		if (isset($this->conn)) {
-			$this->conn->freeRequest($this);
+		if (isset($this->upstream)) {
+			$this->upstream->freeRequest($this);
 		}
 	}
+
+	/**
+	 * Sets the priority
+	 * @param integer Priority
+	 * @return void
+	 */
 	public function setPriority($p) {
 		$this->priority = $p;
 		if ($this->ev !== null) {
-			event_priority_set($this->ev, $p);
+			$this->ev->priority = $p;
 		}
-		
-	}
-	
-	/**
-	 * Called by queue dispatcher to touch the request
-	 * @return int Status
-	 */
-	public function call() {
-		if ($this->state === Request::STATE_FINISHED) {
-			$this->state = Request::STATE_ALIVE;
-			$this->finish();
-			return Request::STATE_FINISHED;
-		}
- 
-		$this->state = Request::STATE_ALIVE;
-		
-		$this->preCall();
- 
-		if ($this->state !== Request::STATE_ALIVE) {
-			return $this->state;
-		}
-		
-		$this->state = Request::STATE_RUNNING;
-		
-		$this->onWakeup();
- 
-		try {
-			$ret = $this->run();
- 
-			if ($this->state === Request::STATE_FINISHED) {
-				// Finished while running
-				return Request::STATE_FINISHED;
-			}
- 
-			if ($ret === NULL) {
-				$ret = Request::STATE_FINISHED;
-			}
-			if ($ret === Request::STATE_FINISHED) {
-				$this->finish();
-			}
-			elseif ($ret === Request::STATE_SLEEPING) {
-				$this->state = $ret;
-			}
-		} catch (RequestSleepException $e) {
-			$this->state = Request::STATE_SLEEPING;
-		} catch (RequestTerminatedException $e) {
-			$this->state = Request::STATE_FINISHED;
-		}
- 
-		if ($this->state === Request::STATE_FINISHED) {
-			$this->finish();
-		}
- 
-		$this->onSleep();
- 
-		return $this->state;
 	}
 	
 	/**
@@ -167,8 +230,7 @@ class Request {
 	 * @param object Source request
 	 * @return void
 	 */
-	public function preinit($req)
-	{
+	protected function preinit($req) {
 		if ($req === NULL) {
 			$req = new stdClass;
 			$req->attrs = new stdClass;
@@ -277,10 +339,10 @@ class Request {
 	public function codepoint($p) {
 		if ($this->codepoint !== $p) {
 			$this->codepoint = $p;
-			return TRUE;
+			return true;
 		}
  
-		return FALSE;
+		return false;
 	}
  
 	/**
@@ -298,17 +360,17 @@ class Request {
 			$set = true;
 		}
  
-		$this->sleepTime = $time*1000000;
+		$this->sleepTime = $time;
  
 		if (!$set) {
 			throw new RequestSleepException;
 		}
 		else {
-			event_timer_del($this->ev);
-			event_timer_add($this->ev, $this->sleepTime);
+			$this->ev->del();
+			$this->ev->add($this->sleepTime);
 		}
  
-		$this->state = Request::STATE_SLEEPING;
+		$this->state = Request::STATE_WAITING;
 	}
  
 	/**
@@ -328,32 +390,28 @@ class Request {
 	 * @return void
 	 */
 	public function wakeup() {
-		if (is_resource($this->ev)) {
-			$this->state = Request::STATE_ALIVE;
-			event_timer_del($this->ev);
-			event_timer_add($this->ev, 1);
+		if ($this->state === Request::STATE_WAITING) {
+			$this->ev->del();
+			$this->ev->add(0);
 		}
 	}
 	
 	/**
-	 * Called by call() to check if ready
-	 * @todo -> protected?
-	 * @return void
+	 * Called to check if Request is ready
+	 * @return boolean Ready?
 	 */
-	public function preCall() {
-		return TRUE;
+	public function checkIfReady() {
+		return true;
 	}
  
 	/**
 	 * Called when the request aborted
-	 * @todo protected?
 	 * @return void
 	 */
 	public function onAbort() { }
  
 	/**
 	 * Called when the request finished
-	 * @todo protected?
 	 * @return void
 	 */
 	public function onFinish() { }
@@ -362,29 +420,22 @@ class Request {
 	 * Called when the request wakes up
 	 * @return void
 	 */
-	public function onWakeup() {
-		if (!Daemon::$compatMode) {
-			Daemon::$process->setStatus(2);
-		}
- 
+	public function onWakeup() { 
 		$this->running = true;
- 
 		Daemon::$req = $this;
 		Daemon::$context = $this;
+		Daemon::$process->setState(Daemon::WSTATE_BUSY);
 	}
  
 	/**
 	 * Called when the request starts sleep
 	 * @return void
 	 */
-	public function onSleep() { 
-		if (!Daemon::$compatMode) {
-			Daemon::$process->setStatus(1);
-		}
- 
-		Daemon::$req = NULL;
-		Daemon::$context = NULL;
-		$this->running = FALSE;
+	public function onSleep() {
+		Daemon::$req = null;
+		Daemon::$context = null;
+		$this->running = false;
+		Daemon::$process->setState(Daemon::WSTATE_IDLE);
 	}	
  
 	/**
@@ -396,7 +447,7 @@ class Request {
 			return;
 		}
  
-		$this->aborted = TRUE;
+		$this->aborted = true;
 		$this->onWakeup();
 		$this->onAbort();
  
@@ -404,7 +455,7 @@ class Request {
 			(ignore_user_abort() === 1) 
 			&& (
 				($this->state === Request::STATE_RUNNING) 
-				|| ($this->state === Request::STATE_SLEEPING)
+				|| ($this->state === Request::STATE_WAITING)
 			)
 			&& !Daemon::$compatMode
 		) {
@@ -412,7 +463,7 @@ class Request {
 				!isset($this->upstream->keepalive->value) 
 				|| !$this->upstream->keepalive->value
 			) {
-				$this->conn->endRequest($this);
+				$this->upstream->endRequest($this);
 			}
 		} else {
 			$this->finish(-1);
@@ -454,36 +505,35 @@ class Request {
 			return;
 		}
  
-		Daemon::callAutoGC();
+		++Daemon::$process->counterGC;
  
 		if (Daemon::$compatMode) {
 			return;
 		}
  
 		if (!Daemon::$obInStack) { // preventing recursion
-				ob_flush();
-			}
+			ob_flush();
+		}
  
 		if ($status !== -1) {
 			$this->postFinishHandler();
-			// $status: 0 - FCGI_REQUEST_COMPLETE, 1 - FCGI_CANT_MPX_CONN, 2 - FCGI_OVERLOADED, 3 - FCGI_UNKNOWN_ROLE  @todo what is -1 ? where is the constant for it?
 			$appStatus = 0;
-			if (isset($this->conn)) {
-				$this->conn->endRequest($this, $appStatus, $status);
+			if (isset($this->upstream)) {
+				$this->upstream->endRequest($this, $appStatus, $status);
 			}
  
 		}
 	}
- 
-	public function postFinishHandler() { }
-	
-	public function onDestruct() {}
-	
-	public function __destruct() {
-		$this->onDestruct();
-	}
+
+	/**
+	 * Called after request finish
+	 * @return void
+	 */
+	protected function postFinishHandler() { }
+
 }
  
 class RequestSleepException extends Exception {}
 class RequestTerminatedException extends Exception {}
 class RequestHeadersAlreadySent extends Exception {}
+

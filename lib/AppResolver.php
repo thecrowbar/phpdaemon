@@ -40,7 +40,7 @@ class AppResolver {
 				if (isset(Daemon::$appInstances[$appNameLower][$instance])) {
 					continue;
 				}
-				$this->appInstantiate($appName, $instance);
+				$this->appInstantiate($appName, $instance, true);
 			}
 		}
 	}
@@ -50,9 +50,12 @@ class AppResolver {
 	 * @param string Application name.	 
 	 * @return object AppInstance.
 	 */
-	public function getInstanceByAppName($appName, $instance = '') {
+	public function getInstanceByAppName($appName, $instance = '', $spawn = true) {
 		$appNameLower = strtolower($appName);
 		if (!isset(Daemon::$appInstances[$appNameLower][$instance])) {
+			if (!$spawn) {
+				return false;
+			}
 			return $this->appInstantiate($appName, $instance);
 		}
 		return Daemon::$appInstances[$appNameLower][$instance];
@@ -92,18 +95,23 @@ class AppResolver {
 	 * Run new application instance	
 	 * @param string Application name
 	 * @param string Name of instance
+	 * @param [boolean = false] Preload?
 	 * @return object AppInstance.
 	 */
-	public function appInstantiate($appName, $instance) {
-		$appNameLower = strtolower($appName);
-		if (class_exists($appName) && is_subclass_of($appName, 'AppInstance')) {
-			$appInstance = new $appName($instance);
-		} else {
-			Daemon::log('appInstantiate(' . $appName . ') failed. Class not exists.');
+	public function appInstantiate($appName, $instance, $preload = false) {
+		$fullname = $this->getAppFullname($appName, $instance);
+		if (!class_exists($appName) || !is_subclass_of($appName, 'AppInstance')) {
 			return false;
 		}
-
-		return $appInstance;
+		if (!$preload) {
+			if (!$appName::$runOnDemand) {
+				return false;
+			}
+			if (isset(Daemon::$config->{$fullname}->limitinstances)) {
+				return false;
+			}
+		}
+		return new $appName($instance);
 	}
 
 	/**
@@ -113,18 +121,22 @@ class AppResolver {
 	 * @param string Default application name.
 	 * @return object Request.
 	 */
-	public function getRequest($req, $upstream, $defaultApp = NULL) {
+	public function getRequest($req, $upstream, $defaultApp = null) {
 		if (isset($req->attrs->server['APPNAME'])) {
 			$appName = $req->attrs->server['APPNAME'];
 		}
-		elseif (($appName = $this->getRequestRoute($req, $upstream)) !== NULL) {}
+		elseif (($appName = $this->getRequestRoute($req, $upstream)) !== null) {
+			if ($appName === false) {
+				return $req;
+			}
+		}
 		else {
 			$appName = $defaultApp;
 		}
-		if (strpos($appName,'-') === false) {
-			$appName .= '-';
+		if (strpos($appName,':') === false) {
+			$appName .= ':';
 		}
-		list($app, $instance) = explode('-', $appName, 2);
+		list($app, $instance) = explode(':', $appName, 2);
 
 		$appInstance = $this->getInstanceByAppName($app, $instance);
 

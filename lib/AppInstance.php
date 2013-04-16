@@ -8,13 +8,17 @@
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
 class AppInstance {
-
-	public $status = 0;        // runtime status
 	public $passphrase;        // optional passphrase
-	public $ready = FALSE;     // ready to start?
-	public $name;              // name of instance
+	public $ready = false;     // ready to start?
+	protected $name;           // name of instance
 	public $config;
 	public $enableRPC = false;
+	public $requestClass;
+	public static $runOnDemand = true;
+
+	const EVENT_CONFIG_UPDATED = 1;
+	const EVENT_GRACEFUL_SHUTDOWN = 2;
+	const EVENT_HARD_SHUTDOWN = 3;
  
 	/**	
 	 * Application constructor
@@ -26,8 +30,16 @@ class AppInstance {
 		$appNameLower = strtolower($appName);
 		$fullname = Daemon::$appResolver->getAppFullName($appName, $this->name);
 		//Daemon::$process->log($fullname . ' instantiated.');
+
+		if ($this->requestClass === null) {
+			$this->requestClass = get_class($this) . 'Request';
+			if (!class_exists($this->requestClass)) {
+				$this->requestClass = null;
+			}
+		}
+
 		if (!isset(Daemon::$appInstances[$appNameLower])) {
-			Daemon::$appInstances[$appNameLower] = array();
+			Daemon::$appInstances[$appNameLower] = [];
 		}
 		Daemon::$appInstances[$appNameLower][$this->name] = $this;
 		
@@ -40,7 +52,7 @@ class AppInstance {
 				&& !isset(Daemon::$config->{$fullname}->disable)
 			) {
 				Daemon::$config->{$fullname}->enable = new Daemon_ConfigEntry;
-				Daemon::$config->{$fullname}->enable->setValue(TRUE);
+				Daemon::$config->{$fullname}->enable->setValue(true);
 			}
 		}
 
@@ -51,7 +63,7 @@ class AppInstance {
 
 		$defaults = $this->getConfigDefaults();
 		if ($defaults) {
-			$this->processDefaultConfig($defaults);
+			$this->config->imposeDefault($defaults);
 		}
 
 		$this->init();
@@ -64,8 +76,8 @@ class AppInstance {
 		}
 	}
 	
-	public static function getInstance($name) {
-		return Daemon::$appResolver->getInstanceByAppName(get_called_class(), $name);
+	public static function getInstance($name, $spawn = true) {
+		return Daemon::$appResolver->getInstanceByAppName(get_called_class(), $name, $spawn);
 	}
 	
 	public function isEnabled() {
@@ -88,12 +100,20 @@ class AppInstance {
 	 * @return mixed Result
 	 */
 	public function RPCall($method, $args) {
-		if ($this->enableRPC && is_callable(array($this, $method))) {
-			return call_user_func_array(array($this, $method), $args);
+		if (!$this->enableRPC || !is_callable([$this, $method])) {
+			return false;
 		}
+		return call_user_func_array([$this, $method], $args);
 	}
 	
-	
+	public function getConfig() {
+		return $this->config;	
+	}
+
+	public function getName() {
+		return $this->name;
+	}
+
 	/**
 	 * Send broadcast RPC.
 	 * You can override it
@@ -102,7 +122,7 @@ class AppInstance {
 	 * @param mixed Callback.
 	 * @return boolean Success.
 	 */
-	public function broadcastCall($method, $args = array(), $cb = NULL) {
+	public function broadcastCall($method, $args = [], $cb = NULL) {
 		return Daemon::$process->IPCManager->sendBroadcastCall(
 					get_class($this) . ($this->name !== '' ? ':' . $this->name : ''),
 					$method,
@@ -119,7 +139,7 @@ class AppInstance {
 	 * @param mixed Callback.
 	 * @return boolean Success.
 	 */
-	public function singleCall($method, $args = array(), $cb = NULL) {
+	public function singleCall($method, $args = [], $cb = NULL) {
 		return Daemon::$process->IPCManager->sendSingleCall(
 					get_class($this) . ($this->name !== '' ? ':' . $this->name : ''),
 					$method,
@@ -137,7 +157,7 @@ class AppInstance {
 	 * @param mixed Callback.
 	 * @return boolean Success.
 	 */
-	public function directCall($workerId, $method, $args = array(), $cb = NULL) {
+	public function directCall($workerId, $method, $args = [], $cb = NULL) {
 		return Daemon::$process->IPCManager->sendDirectCall(
 					$workerId,
 					get_class($this) . ($this->name !== '' ? ':' . $this->name : ''),
@@ -147,52 +167,17 @@ class AppInstance {
 		);
 	}
 	
-
- 	/**
-	 * Process default config
-	 * @todo move it to Daemon_Config class
-	 * @param array {"setting": "value"}
-	 * @return void
-	 */
-	public function processDefaultConfig($settings = array()) {
-		foreach ($settings as $k => $v) {
-			$k = strtolower(str_replace('-', '', $k));
-
-			if (!isset($this->config->{$k})) {
-			  if (is_scalar($v))	{
-					$this->config->{$k} = new Daemon_ConfigEntry($v);
-				} else {
-					$this->config->{$k} = $v;
-				}
-			} elseif ($v instanceof Daemon_ConfigSection) {
-			// @todo
-			}	else {
-				$current = $this->config->{$k};
-			  if (is_scalar($v))	{
-					$this->config->{$k} = new Daemon_ConfigEntry($v);
-				} else {
-					$this->config->{$k} = $v;
-				}
-				
-				$this->config->{$k}->setHumanValue($current->value);
-				$this->config->{$k}->source = $current->source;
-				$this->config->{$k}->revision = $current->revision;
-			}
-		}
-	}
-	
 	/**
 	 * Called when the worker is ready to go
-	 * @todo -> protected?
 	 * @return void
 	 */
-	public function onReady() { }
+	protected function onReady() {}
  
 	/**
 	 * Called when creates instance of the application
 	 * @return void
 	 */
-	public function init() {}
+	protected function init() {}
  
 	/**
 	 * Called when worker is going to update configuration
@@ -203,39 +188,26 @@ class AppInstance {
  
 	/**
 	 * Called when application instance is going to shutdown
-	 * @todo protected?
 	 * @return boolean Ready to shutdown?
 	 */
-	public function onShutdown() {
-		return TRUE;
+	protected function onShutdown($graceful = false) {
+		return true;
 	}
  
 	/**
-	 * Create Request
-	 * @todo more description needed
+	 * Create Request instance
 	 * @param object Request
 	 * @param object Upstream application instance
 	 * @return object Request
 	 */
 	public function beginRequest($req, $upstream) {
-		return FALSE;
-	}
- 
-	/**
-	 * Handles the output from downstream requests
-	 * @todo more description
-	 * @param object Request
-	 * @param string The output
-	 * @return void
-	 */
-	public function requestOut($r, $s) { }
- 
-	/**
-	 * Handles the output from downstream requests
-	 * @return void
-	 */
-	public function endRequest($req, $appStatus, $protoStatus) { }
- 
+		if (!$this->requestClass) {
+			return false;
+		}
+		$className = $this->requestClass;
+		return new $className($this, $upstream, $req);
+    }
+
 	/**
 	 * Log something
 	 * @param string - Message.
@@ -245,68 +217,31 @@ class AppInstance {
 		Daemon::log(get_class($this) . ': ' . $message);
 	}
 	
-	/** 
-	 * Shutdown the application instance
-	 * @param boolean Graceful?
-	 * @return void
-	 */
-	public function shutdown($graceful = false) {
-		return $this->onShutdown();
-	}
- 
 	/**
 	 * Handle the request
 	 * @param object Parent request
-	 * @param object Upstream application  @todo is upstream really needed?
+	 * @param object Upstream application
 	 * @return object Request
 	 */
 	public function handleRequest($parent, $upstream) {
 		$req = $this->beginRequest($parent, $upstream);
-
-		if (!$req) {
-			return $parent;
-		}
-
-		if (Daemon::$config->logqueue->value) {
-			Daemon::$process->log('request added to ' . get_class($this) . '->queue.');
-		}
-
-		return $req;
-	}
- 
-	/**
-	 * Pushes request to the queue
-	 * @todo log warning message and then sometime remove it
-	 * @param object Request
-	 * @return object Request
-	 * @deprecated
-	 */
-	public function pushRequest($req) {
-		return $req;
+		return $req ?: $parent;
 	}
  
 	/**
 	 * Handle the worker status
-	 * @param int Status code @todo use constants in method
+	 * @param int Status code
 	 * @return boolean Result
 	 */
 	public function handleStatus($ret) {
-		if ($ret === 2) {
-			// script update
-			$r = $this->onConfigUpdated();
+		if ($ret === self::EVENT_CONFIG_UPDATED) {
+			$this->onConfigUpdated();
+			return true;
+		} elseif ($ret === self::EVENT_GRACEFUL_SHUTDOWN) {
+			return $this->onShutdown(true);
+		} elseif ($ret === self::EVENT_HARD_SHUTDOWN) {
+			return $this->onShutdown();
 		}
-		elseif ($ret === 3) {
-			 // graceful worker shutdown for restart
-			$r = $this->shutdown(TRUE);
-		}
-		elseif ($ret === 5) {
-			// shutdown worker
-			$r = $this->shutdown();
-		} else {
-			$r = TRUE;
-		}
-
-		return $r;
+		return false;
 	}
-
 }

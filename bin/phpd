@@ -1,4 +1,4 @@
-#!/usr/bin/php -q
+#!/usr/bin/env php
 <?php
 
 /**************************************************************************/
@@ -8,8 +8,12 @@
 /* @author kak.serpom.po.yaitsam@gmail.com
 /* @description Bootstrap init script.
 /**************************************************************************/
-@ob_end_clean(); // clean shebang
+@ob_end_clean(); // clear shebang
 error_reporting(E_ALL);
+if (!version_compare(PHP_VERSION, '5.4.0', '>=')) {
+	echo 'PHP >= 5.4.0 required.' . PHP_EOL;
+	return;
+}
 
 foreach (array('/usr/share/phpdaemon', dirname(dirname(__FILE__))) as $d) {
 	if (@chdir($d)) {
@@ -20,11 +24,10 @@ foreach (array('/usr/share/phpdaemon', dirname(dirname(__FILE__))) as $d) {
 ini_set('include_path', get_include_path() 
 	. ':' . dirname(dirname(__FILE__))
 	. ':' . dirname(dirname(__FILE__)).'/conf'
-	. ':/usr/share/phpdaemon:/etc/phpdaemon:/opt/phpdaemon'
+	. ':/usr/share/phpdaemon:/etc/phpdaemon'
 );
 
-spl_autoload_register(function($classname) {
-	
+$autoloader = function($classname) {
 	$parts = explode('\\', $classname);
 	if (sizeof($parts) > 1 && ('PHPDaemon' == $parts[0])) {
 		// namespaces support (remove first "PHPDaemon\" part)
@@ -36,14 +39,14 @@ spl_autoload_register(function($classname) {
 	foreach ($pathes as $path) {
 		if (file_exists($path)) {
 			require $path;
-			return;
+			return true;
 		}
 	}
 	if (class_exists('Daemon', false) && isset(Daemon::$config->autoload->value)) {
-		$files = glob(sprintf(Daemon::$config->autoload->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
+		$files = glob($g = sprintf(Daemon::$config->autoload->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
 		if (isset($files[0])) {
 			require $files[0];
-			return;
+			return true;
 		}
 	}
 	
@@ -51,25 +54,32 @@ spl_autoload_register(function($classname) {
 		$files = glob($g = sprintf(Daemon::$config->appfilepath->value, str_replace('_', DIRECTORY_SEPARATOR, $classname)), GLOB_BRACE);
 		if (isset($files[0])) {
 			require $files[0];
-			return;
+			return true;
 		}
 	}
-	
+	return false;
+};
+$autoloadCache = array();
+spl_autoload_register(function($classname) use ($autoloader, &$autoloadCache) {
+	if (isset($autoloadCache[$classname])) {
+		return $autoloadCache[$classname];
+	}
+	if ($autoloader($classname) === false) {
+		$autoloadCache[$classname] = false;
+	}
 });
 
-set_exception_handler(function ($e) {
-	Daemon::log('Caught exception! $e:'.$e);
-});
+class_exists('Debug');
 
 require 'lib/BinarySubstr.php';
+require 'lib/IgbinaryFallback.php';
 $e = null;
 execute:
 try {
 	if ($e) {
-		$thread = $e->thread;
+		$thread = $e->getThread();
 	    $e = null;
-		$thread->run();
-		$thread->shutdown();
+		$thread();
 	}
 	else {
 	    Daemon_Bootstrap::init(isset($configFile) ? $configFile : null);

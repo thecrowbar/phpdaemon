@@ -7,7 +7,11 @@
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
 class IdentServer extends NetworkServer {
-	public $pairs = array();
+
+	/* Pairs
+	 * @var hash ["$local:$foreign" => "$user", ...]
+	 */
+	protected $pairs = [];
 
 	/**
 	 * Setting default config options
@@ -15,11 +19,11 @@ class IdentServer extends NetworkServer {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
+		return [
 			// @todo add description strings
 			'listen'				=> '0.0.0.0',
 			'port' 			        => 113,
-		);
+		];
 	}
 
 	/**
@@ -40,36 +44,65 @@ class IdentServer extends NetworkServer {
 		}
 	}
 
+	/* Register pair
+	 * @param integer Local
+	 * @param integer Foreign
+	 * @param string  User
+	 * @return void
+	 */
+
 	public function registerPair($local, $foreign, $user) {
-		$this->appInstance->broadcastCall('registerPair', array($local, $foreign, $user));
+		$this->appInstance->broadcastCall('registerPair', [
+				$local,
+				$foreign,
+				is_array($user) ? implode(' : ', $user) : $user
+		]);
 	}
+
+	/* Unregister pair
+	 * @param integer Local
+	 * @param integer Foreign
+	 * @return void
+	 */
 	public function unregisterPair($local, $foreign) {
-		$this->appInstance->broadcastCall('unregisterPair', array($local, $foreign));
+		$this->appInstance->broadcastCall('unregisterPair', [$local, $foreign]);
 	}
+
+	/* Find pair
+	 * @param integer Local
+	 * @param integer Foreign
+	 * @return string User
+	 */
 	public function findPair($local, $foreign) {
+		$k = $local . ':' . $foreign;
 		return
-			isset($this->pairs[$local . ':' .$foreign])
-		 	? $this->pairs[$local . ':' .$foreign]
+			isset($this->pairs[$k])
+		 	? $this->pairs[$k]
 		 	: false;
 	}
 }
 
 class IdentServerConnection extends Connection {
-	public $EOL = "\r\n";
-	protected $highMark = 64;
+
+	/**
+	 * EOL
+	 * @var string "\n"
+	 */	
+	protected $EOL = "\r\n";
+
+	/**
+	 * Default high mark. Maximum number of bytes in buffer.
+	 * @var integer
+	 */	
+	protected $highMark = 32;
+	
 	/**
 	 * Called when new data received.
-	 * @param string New data.
 	 * @return void
 	 */
-	public function stdin($buf) {
-		$this->buf .= $buf;
-		if (strlen($this->buf) > 64) {
-			$this->finish();
-			return;
-		}
-		while (($line = $this->gets()) !== false) {
-			$e = explode(',', str_replace("\x20", '', $line = trim($line)));
+	protected function onRead() {
+		while (($line = $this->readline()) !== null) {
+			$e = explode(' , ', $line);
 			if ((sizeof($e) <> 2) || !ctype_digit($e[0]) || !ctype_digit($e[1])) {
 				$this->writeln($line. ' : ERROR : INVALID-PORT');
 				$this->finish();
@@ -79,7 +112,6 @@ class IdentServerConnection extends Connection {
 			$foreign = (int) $e[1];
 			if ($user = $this->pool->findPair($local, $foreign)) {
 				$this->writeln($line. ' : USERID : ' . $user);
-
 			} else {
 				$this->writeln($line. ' : ERROR : NO-USER');	
 			}

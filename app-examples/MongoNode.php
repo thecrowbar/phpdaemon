@@ -10,9 +10,10 @@ class MongoNode extends AppInstance {
 	
 	public $db; // MongoClient
 	public $cache; // MemcacheClient
-	public $RTEPClient; // RTEPClient
 	public $LockClient; // LockClient
 	public $cursor; // Tailable cursor
+	public $timer;
+	protected $inited = false;
 
 	/**
 	 * Setting default config options
@@ -20,10 +21,10 @@ class MongoNode extends AppInstance {
 	 * @return array|false
 	 */
 	protected function getConfigDefaults() {
-		return array(
-			// disabled by default
-			'enable'     => 0
-		);
+		return [
+			'mongoclientname' => '',
+			'memcacheclientname' => '',
+		];
 	}
 
 	/**
@@ -31,27 +32,61 @@ class MongoNode extends AppInstance {
 	 * @return void
 	 */
 	public function init() {
-		if ($this->config->enable->value) {
-			$this->LockClient = Daemon::$appResolver->getInstanceByAppName('LockClient');
-			$this->db = Daemon::$appResolver->getInstanceByAppName('MongoClient');
-			$this->cache = Daemon::$appResolver->getInstanceByAppName('MemcacheClient');
-			$this->RTEPClient = Daemon::$appResolver->getInstanceByAppName('RTEPClient');
+		$this->db = MongoClientAsync::getInstance($this->config->mongoclientname->value);
+		$this->cache = MemcacheClient::getInstance($this->config->memcacheclientname->value);
+		if (!isset($this->config->limitinstances)) {
+			$this->log('missing \'limitInstances\' directive');
 		}
 	}
 
+
+	public function touchCursor() {
+		if (!$this->cursor) {
+			if (!$this->inited) {
+				$this->inited = true;
+			    
+				$this->cache->get('_rp',
+					function ($answer) {
+						$this->inited = false;
+						$e = explode(' ', $answer->result);
+					   
+						if (isset($e[1])) {
+							$ts = new MongoTimestamp((int) $e[0], (int) $e[1]);
+						} else {
+							$ts = new MongoTimestamp(0, 0);
+						}
+					   
+						if (Daemon::$config->logevents->value) {
+							Daemon::log('MongoNode: replication point - ' . $answer->result . ' (' . Debug::dump($ts) . ')');
+						}
+					   
+						$this->initSlave($ts);
+					}
+				);
+			}
+		}
+		elseif (!$this->cursor->session->busy) {
+			if ($this->cursor->lastOpId !== NULL) {
+				$this->cache->set('_rp', $this->cursor->lastOpId);
+				$this->cursor->lastOpId = NULL;
+			}
+		     
+			try {
+				$this->cursor->getMore();
+			} catch (MongoClientSessionFinished $e) {
+				$this->cursor = FALSE;
+			}
+		}
+	}
 	/**
 	 * Called when the worker is ready to go.
 	 * @return void
 	 */
 	public function onReady() {
 		if ($this->config->enable->value) {
-			$appInstance = $this;
-			
-			$this->LockClient->job(__CLASS__,TRUE,
-				function($command,$jobname,$client) use ($appInstance) {
-					$appInstance->pushRequest(new MongoNode_ReplicationRequest($appInstance, $appInstance));
-				}
-			);
+			$this->timer = setTimeout(function($timer) {
+				$this->touchCursor();
+			}, 0.3e6);
 		}
 	}
 
@@ -76,11 +111,6 @@ class MongoNode extends AppInstance {
 			if (Daemon::$config->logevents->value) {
 				Daemon::log('MongoNode send event ' . $o['name']);
 			}
-
-			$this->RTEPClient->client->request(array(
-				'op'    => 'event',
-				'event' => $o,
-			));
 		}
 	}
 
@@ -95,10 +125,10 @@ class MongoNode extends AppInstance {
 		}
 	      
 		$this->cache->get('_id.' . ((string)$o['_id']),
-			function($m) use ($o) {
+			function($mc) use ($o) {
 				if (is_string($m->result)) {
-					$m->appInstance->delete($m->result);
-					$m->appInstance->delete('_id.' . $o['_id']);
+					$mc->delete($m->result);
+					$mc->delete('_id.' . $o['_id']);
 				}
 			}
 		);
@@ -109,27 +139,25 @@ class MongoNode extends AppInstance {
 	 * @param object Object.
 	 * @return void
 	 */
-	public function initSlave($point) {
-		$node = $this;
-	      
+	public function initSlave($point) {   
 		$this->db->{'local.oplog.$main'}->find(
-			function($cursor) use ($node) {
-				$node->cursor = $cursor;
+			function($cursor) {
+				$this->cursor = $cursor;
 				$cursor->state = 1;
 				$cursor->lastOpId = NULL;
 			     
 				foreach ($cursor->items as $k => &$item) {
 					if (Daemon::$config->logevents->value) {
-						Daemon::log(get_class($node) . ': caught oplog-record with ts = (' . Debug::dump($item['ts']) . ')');
+						Daemon::log(get_class($this) . ': caught oplog-record with ts = (' . Debug::dump($item['ts']) . ')');
 					}
 				    
 					$cursor->lastOpId = $item['ts'];
 				    
 					if ($item['op'] == 'i') {
-						$node->cacheObject($item['o']);
+						$this->cacheObject($item['o']);
 					}
 					elseif ($item['op'] == 'd') {
-						$node->deleteObject($item['o']);
+						$this->deleteObject($item['o']);
 					}
 					elseif ($item['op'] == 'u') {
 						if (
@@ -137,11 +165,11 @@ class MongoNode extends AppInstance {
 							&& ($item['b'] === FALSE)
 						) {
 							$item['o']['_id'] = $item['o2']['_id'];
-							$node->cacheObject($item['o']);
+							$this->cacheObject($item['o']);
 						} else {
 							$cursor->appInstance->{$item['ns']}->findOne(
-								function($item) use ($node) {
-									$node->cacheObject($item);
+								function($item) {
+									$this->cacheObject($item);
 								},
 								array('where' => array('_id' => $item['o2']['_id']))
 							);
@@ -165,58 +193,5 @@ class MongoNode extends AppInstance {
 				'parse_oplog' => TRUE,
 			)
 		);
-	}
-	
-}
-
-class MongoNode_ReplicationRequest extends Request {
-       
-	public $inited = FALSE; // Initialized?
-
-	/**
-	 * Called when request iterated.
-	 * @return void
-	 */
-	public function run() {
-		if (!$this->appInstance->cursor) {
-			if (!$this->inited) {
-				$req = $this;
-				$this->inited = TRUE;
-			    
-				$this->appInstance->cache->get('_rp',
-					function ($answer) use ($req) {
-						$req->inited = FALSE;
-						$e = explode(' ', $answer->result);
-					   
-						if (isset($e[1])) {
-							$ts = new MongoTimestamp((int) $e[0], (int) $e[1]);
-						} else {
-							$ts = new MongoTimestamp(0, 0);
-						}
-					   
-						if (Daemon::$config->logevents->value) {
-							Daemon::log('MongoNode: replication point - ' . $answer->result . ' (' . Debug::dump($ts) . ')');
-						}
-					   
-						$req->appInstance->initSlave($ts);
-					}
-				);
-			}
-		}
-		elseif (!$this->appInstance->cursor->session->busy) {
-			if ($this->appInstance->cursor->lastOpId !== NULL) {
-				$this->appInstance->cache->set('_rp', $this->appInstance->cursor->lastOpId);
-				$this->appInstance->cursor->lastOpId = NULL;
-			}
-		     
-			try {
-				$this->appInstance->cursor->getMore();
-			} catch (MongoClientSessionFinished $e) {
-				$this->appInstance->cursor = FALSE;
-			}
-		}
-		
-		$this->sleep(0.3);
-	}
-	
+	}	
 }

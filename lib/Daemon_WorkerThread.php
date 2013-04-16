@@ -9,34 +9,129 @@
  */
 class Daemon_WorkerThread extends Thread {
 
-	public $update = FALSE;
-	public $reload = FALSE;
-	public $reloadTime = 0;
-	private $reloadDelay = 2;
-	public $reloaded = FALSE;
+	/**
+	 * Update?
+	 * @var boolean
+	 */
+	public $update = false;
 
 	/**
-	 * Map connnection id to application which created this connection
-	 * @var string
+	 * Reload?
+	 * @var boolean
+	 */
+	public $reload = false;
+
+	/**
+	 * Reload time
+	 * @var integer
+	 */
+	protected $reloadTime = 0;
+
+	/**
+	 * Reload delay
+	 * @var integer
+	 */
+	protected $reloadDelay = 2;
+
+	/**
+	 * Reloaded?
+	 * @var boolean
+	 */
+	public $reloaded = false;
+
+	/**
+	 * Time of last activity
+	 * @var integer
 	 */
 	public $timeLastActivity = 0;
-	private $autoReloadLast = 0;
-	private $currentStatus = 0;
+
+	/**
+	 * Last time of auto reload
+	 * @var integer
+	 */
+	protected $autoReloadLast = 0;
+
+	/**
+	 * Current status
+	 * @var integer
+	 */
+	protected $currentStatus = 0;
+
+	/**
+	 * Event base
+	 * @var EventBase
+	 */
 	public $eventBase;
-	public $timeoutEvent;
-	public $status = 0;
-	public $breakMainLoop = FALSE;
-	public $reloadReady = FALSE;
-	public $delayedSigReg = TRUE;
-	public $instancesCount = array();
+
+	/**
+	 * DNS base
+	 * @var EventDnsBase
+	 */
+	public $dnsBase;
+
+	/**
+	 * State
+	 * @var integer
+	 */
+	public $state = 0;
+
+	/**
+	 * Break main loop?
+	 * @var boolean
+	 */
+	public $breakMainLoop = false;
+
+	/**
+	 * Reload ready?
+	 * @var boolean
+	 */
+	public $reloadReady = false;
+
+	/**
+	 * If true, we do not register signals automatically at start
+	 * @var boolean
+	 */
+	protected $delayedSigReg = false;
+
+	/**
+	 * Instances count
+	 * @var hash
+	 */
+	public $instancesCount = [];
+
+	/**
+	 * Connection
+	 * @var Connection
+	 */
 	public $connection;
+
+	/**
+	 * Counter GC
+	 * @var integer
+	 */
 	public $counterGC = 0;
+
+	/**
+	 * Stack of callbacks to execute
+	 * @var StackCallbacks
+	 */
+	public $callbacks;
+
 	/**
 	 * Runtime of Worker process.
 	 * @return void
 	 */
-	public function run() {
-		FS::init();
+	protected function run() {
+		$this->callbacks = new StackCallbacks;
+		if (Daemon::$process instanceof Daemon_MasterThread) {
+			Daemon::$process->unregisterSignals();
+		}
+		if (Daemon::$process && Daemon::$process->eventBase) {
+			Daemon::$process->eventBase->reinit();
+			$this->eventBase = Daemon::$process->eventBase;
+		} else {
+			$this->eventBase = new EventBase();
+		}
 		Daemon::$process = $this;
 		if (Daemon::$logpointerAsync) {
 			$oldfd = Daemon::$logpointerAsync->fd;
@@ -44,29 +139,33 @@ class Daemon_WorkerThread extends Thread {
 			Daemon::$logpointerAsync = null;
 		}
 		class_exists('Timer');
-		class_exists('Daemon_TimedEvent');
 		$this->autoReloadLast = time();
 		$this->reloadDelay = Daemon::$config->mpmdelay->value + 2;
-		$this->setStatus(4);
+		$this->setState(Daemon::WSTATE_PREINIT);
 
 		if (Daemon::$config->autogc->value > 0) {
 			gc_enable();
+			gc_collect_cycles();
 		} else {
 			gc_disable();
+		}
+
+		if (Daemon::$runworkerMode) {
+			Daemon::$appResolver = require Daemon::$appResolverPath;
+			Daemon::$appResolver->preload(true);
 		}
 
 		$this->prepareSystemEnv();
 		$this->overrideNativeFuncs();
 
-		$this->setStatus(6);
-		$this->eventBase = event_base_new();
+		$this->setState(Daemon::WSTATE_INIT);;
+		$this->dnsBase = new EventDnsBase($this->eventBase, false); // @TODO: test with true
 		$this->registerEventSignals();
 
-		FS::init(); // re-init
+		FS::init();
 		FS::initEvent();
 		Daemon::openLogs();
-
-
+	
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
 		
 		Daemon::$appResolver->preload();
@@ -80,32 +179,37 @@ class Daemon_WorkerThread extends Thread {
 			}
 		}
 
-		$this->setStatus(1);
+		$this->setState(Daemon::WSTATE_IDLE);
 
 		Timer::add(function($event) {
-			$self = Daemon::$process;
 
-			$self->IPCManager->ensureConnection();
+			if (!Daemon::$runworkerMode || 1) {
+				$this->IPCManager->ensureConnection();
+			}
 
-			if ($self->checkState() !== TRUE) {
-				$self->breakMainLoop = TRUE;
-				event_base_loopexit($self->eventBase);
+			$this->breakMainLoopCheck();
+			if ($this->breakMainLoop) {
+				$this->eventBase->exit();
 				return;
 			}
 
+			if (Daemon::checkAutoGC()) {
+				$this->callbacks->push(function($thread) {
+					gc_collect_cycles();
+				});
+				$this->eventBase->exit();
+			}
+
 			$event->timeout();
-		}, 1e6 * 1,	'checkState');
+		}, 1e6 * 1,	'breakMainLoopCheck');
 		if (Daemon::$config->autoreload->value > 0) {
 			Timer::add(function($event) {
-				$self = Daemon::$process;
-
 				static $n = 0;
-
 				$list = get_included_files();
 				$s = sizeof($list);
 				if ($s > $n) {
 					$slice = array_map('realpath', array_slice($list, $n));
-					Daemon::$process->IPCManager->sendPacket(array('op' => 'addIncludedFiles', 'files' => $slice));
+					Daemon::$process->IPCManager->sendPacket(['op' => 'addIncludedFiles', 'files' => $slice]);
 					$n = $s;
 				}
 				$event->timeout();
@@ -113,101 +217,93 @@ class Daemon_WorkerThread extends Thread {
 		}
 
 		while (!$this->breakMainLoop) {
-			event_base_loop($this->eventBase);
+			$this->callbacks->executeAll($this);
+			if (!$this->eventBase->dispatch()) {
+				break;
+			}
 		}
+		$this->shutdown();
 	}
 
 	/**
 	 * Overrides native PHP functions.
 	 * @return void
 	 */
-	public function overrideNativeFuncs() {
+	protected function overrideNativeFuncs() {
 		if (Daemon::supported(Daemon::SUPPORT_RUNKIT_INTERNAL_MODIFY)) {
-
 
 			runkit_function_rename('header', 'header_native');
 
 			function header() {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return call_user_func_array(array(Daemon::$req, 'header'), func_get_args());
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return call_user_func_array([Daemon::$req, 'header'], func_get_args());
 			}
 
 			runkit_function_rename('is_uploaded_file', 'is_uploaded_file_native');
 
 			function is_uploaded_file() {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return call_user_func_array(array(Daemon::$req, 'isUploadedFile'), func_get_args());
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return call_user_func_array([Daemon::$req, 'isUploadedFile'], func_get_args());
 			}
 
 
 			runkit_function_rename('move_uploaded_file', 'move_uploaded_file_native');
 
 			function move_uploaded_file() {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return call_user_func_array(array(Daemon::$req, 'moveUploadedFile'), func_get_args());
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return call_user_func_array([Daemon::$req, 'moveUploadedFile'], func_get_args());
 			}
-
 
 			runkit_function_rename('headers_sent', 'headers_sent_native');
 
 			function headers_sent(&$file, &$line) {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return Daemon::$req->headers_sent($file, $line);
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return Daemon::$req->headers_sent($file, $line);
 			}
 
 			runkit_function_rename('headers_list', 'headers_list_native');
 
 			function headers_list() {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return Daemon::$req->headers_list();
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return Daemon::$req->headers_list();
 			}
 
 			runkit_function_rename('setcookie', 'setcookie_native');
 
 			function setcookie() {
-				if (
-					Daemon::$req
-					&& Daemon::$req instanceof HTTPRequest
-				) {
-					return call_user_func_array(array(Daemon::$req, 'setcookie'), func_get_args());
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return call_user_func_array([Daemon::$req, 'setcookie'], func_get_args());
 			}
 
 			runkit_function_rename('register_shutdown_function', 'register_shutdown_function_native');
 
 			function register_shutdown_function($cb) {
-				if (Daemon::$req) {
-					return Daemon::$req->registerShutdownFunction($cb);
+				if (!Daemon::$req || !Daemon::$req instanceof HTTPRequest) {
+					return false;
 				}
+				return Daemon::$req->registerShutdownFunction($cb);
 			}
 
 			runkit_function_copy('create_function', 'create_function_native');
 			runkit_function_redefine('create_function', '$arg,$body', 'return __create_function($arg,$body);');
 
 			function __create_function($arg, $body) {
-				static $cache = array();
-				static $maxCacheSize = 64;
+				static $cache = [];
+				static $maxCacheSize = 128;
 				static $sorter;
+				static $window = 32;
 
 				if ($sorter === NULL) {
 					$sorter = function($a, $b) {
@@ -219,20 +315,21 @@ class Daemon_WorkerThread extends Thread {
 					};
 				}
 
-				$crc = crc32($arg . "\x00" . $body);
+				$source = $arg . "\x00" . $body;
+				$key = md5($source, true) . pack('l', crc32($source));
 
-				if (isset($cache[$crc])) {
-					++$cache[$crc][1];
+				if (isset($cache[$key])) {
+					++$cache[$key][1];
 
-					return $cache[$crc][0];
+					return $cache[$key][0];
 				}
 
-				if (sizeof($cache) >= $maxCacheSize) {
+				if (sizeof($cache) >= $maxCacheSize + $window) {
 					uasort($cache, $sorter);
-					array_pop($cache);
+					$cache = array_slice($cache, $maxCacheSize);
 				}
 
-				$cache[$crc] = array($cb = eval('return function('.$arg.'){'.$body.'};'), 0);
+				$cache[$key] = [$cb = eval('return function('.$arg.'){'.$body.'};'), 0];
 				return $cb;
 			}
 		}
@@ -242,12 +339,14 @@ class Daemon_WorkerThread extends Thread {
 	 * Setup settings on start.
 	 * @return void
 	 */
-	public function prepareSystemEnv() {
+	protected function prepareSystemEnv() {
 		proc_nice(Daemon::$config->workerpriority->value);
 		
-		register_shutdown_function(array($this,'shutdown'));
+		register_shutdown_function(function () {
+			$this->shutdown();
+		});
 		
-		$this->setproctitle(
+		$this->setTitle(
 			Daemon::$runName . ': worker process'
 			. (Daemon::$config->pidfile->value !== Daemon::$config->defaultpidfile->value
 				? ' (' . Daemon::$config->pidfile->value . ')' : '')
@@ -320,27 +419,36 @@ class Daemon_WorkerThread extends Thread {
 	 * Reloads additional config-files on-the-fly.
 	 * @return void
 	 */
-	private function update() {
+	protected function update() {
 		FS::updateConfig();
-		foreach (Daemon::$appInstances as $k => $app) {
+		foreach (Daemon::$appInstances as $app) {
 			foreach ($app as $appInstance) {
-				$appInstance->handleStatus(2);
+				$appInstance->handleStatus(AppInstance::EVENT_CONFIG_UPDATED);
 			}
 		}
 	}
 
 	/**
-	 * @todo description?
+	 * Check if we should break main loop
+	 * @return void
 	 */
-	public function checkState() {
+	protected function breakMainLoopCheck() {
 		$time = microtime(true);
 
-		if ($this->terminated) {
-			return FALSE;
+		if ($this->terminated || $this->breakMainLoop) {
+			return;
 		}
 
-		if ($this->status > 0) {
-			return $this->status;
+		if ($this->shutdown) {
+			$this->breakMainLoop = true;
+			return;
+		}
+
+		if ($this->reload) {
+			if ($time > $this->reloadTime) {
+				$this->breakMainLoop = true;
+			}
+			return;
 		}
 
 		if (
@@ -349,10 +457,7 @@ class Daemon_WorkerThread extends Thread {
 		) {
 			$this->log('\'maxmemory\' exceed. Graceful shutdown.');
 
-			$this->reload = TRUE;
-			$this->reloadTime = $time + $this->reloadDelay;
-			$this->setStatus($this->currentStatus);
-			$this->status = 3;
+			$this->initReload();
 		}
 
 		if (
@@ -362,54 +467,37 @@ class Daemon_WorkerThread extends Thread {
 		) {
 			$this->log('\'maxworkeridle\' exceed. Graceful shutdown.');
 
-			$this->reload = TRUE;
-			$this->reloadTime = $time + $this->reloadDelay;
-			$this->setStatus($this->currentStatus);
-			$this->status = 3;
+			$this->initReload();
 		}
 
-		if ($this->update === TRUE) {
-			$this->update = FALSE;
+		if ($this->update === true) {
+			$this->update = false;
 			$this->update();
 		}
+	}
 
-		if ($this->shutdown === TRUE) {
-			$this->status = 5;
-		}
-
-		if (
-			($this->reload === TRUE)
-			&& ($time > $this->reloadTime)
-		) {
-			$this->status = 6;
-		}
-
-		if ($this->status > 0) {
-			foreach (Daemon::$appInstances as $app) {
-				foreach ($app as $appInstance) {
-					$appInstance->handleStatus($this->status);
-				}
-			}
-
-			return $this->status;
-		}
-
-		return TRUE;
+	/**
+	 * Start reloading procedure
+	 * @var Connection
+	 */
+	protected function initReload() {
+		$this->reload = true;
+		$this->reloadTime = microtime(true) + $this->reloadDelay;
+		$this->setState($this->state);
 	}
 
 	/**
 	 * Asks the running applications the whether we can go to shutdown current (old) worker.
 	 * @return boolean - Ready?
 	 */
-	public function appInstancesReloadReady() {
-		$ready = TRUE;
+	protected function appInstancesReloadReady() {
+		$ready = true;
 
 		foreach (Daemon::$appInstances as $k => $app) {
 			foreach ($app as $appInstance) {
-				if (!$appInstance->handleStatus($this->currentStatus)) {
+				if (!$appInstance->handleStatus(AppInstance::EVENT_GRACEFUL_SHUTDOWN)) {
 					$this->log(__METHOD__ . ': waiting for ' . $k);
-
-					$ready = FALSE;
+					$ready = false;
 				}
 			}
 		}
@@ -417,11 +505,11 @@ class Daemon_WorkerThread extends Thread {
 	}
 
 	/**
-	 * @todo description?
-	 * @param boolean - Hard? If hard, we shouldn't wait for graceful shutdown of the running applications.
-	 * @return boolean - Ready?
+	 * Shutdown this worker
+	 * @param boolean Hard? If hard, we shouldn't wait for graceful shutdown of the running applications.
+	 * @return boolean Ready?
 	 */
-	public function shutdown($hard = FALSE) {
+	protected function shutdown($hard = false) {
 		$error = error_get_last(); 
 		if ($error) {
 			if ($error['type'] === E_ERROR) {
@@ -448,9 +536,9 @@ class Daemon_WorkerThread extends Thread {
 		}
 
 		$this->terminated = TRUE;
-		$this->setStatus(3);
 
 		if ($hard) {
+			$this->setState(Daemon::WSTATE_SHUTDOWN);
 			exit(0);
 		}
 
@@ -464,11 +552,9 @@ class Daemon_WorkerThread extends Thread {
 			$this->log('reloadReady = ' . Debug::dump($this->reloadReady));
 		}
 
-		$n = 0;
+		unset(Timer::$list['breakMainLoopCheck']);
 
-		unset(Timer::$list['checkState']);
-
-		Timer::add(function($event) 	{
+		Timer::add(function($event) {
 			$self = Daemon::$process;
 
 			$self->reloadReady = $self->appInstancesReloadReady();
@@ -480,38 +566,40 @@ class Daemon_WorkerThread extends Thread {
 				$event->timeout();
 			}
 			else {
-				event_base_loopexit($self->eventBase);
+				$self->eventBase->exit();
 			}
 		}, 1e6, 'checkReloadReady');
 		while (!$this->reloadReady) {
-			event_base_loop($this->eventBase);
+			$this->eventBase->loop();
 		}
-		//FS::waitAllEvents(); // ensure that all I/O events completed before suicide
-		//posix_kill(posix_getppid(), SIGCHLD);
+		FS::waitAllEvents(); // ensure that all I/O events completed before suicide
 		exit(0); // R.I.P.
 	}
 
 	/**
-	 * Changes the worker's status.
-	 * @param int - Integer status.
-	 * @return boolean - Success.
+	 * Set current status of worker
+	 * @param int Constant
+	 * @return boolean Success.
 	 */
-	public function setStatus($int) {
+	public function setState($int) {
+		if (Daemon::$compatMode) {
+			return true;
+		}
 		if (!$this->id) {
-			return FALSE;
+			return false;
 		}
 
-		$this->currentStatus = $int;
+		if (Daemon::$config->logworkersetstate->value) {
+			$this->log('state is ' . Daemon::$wstateRev[$int]);
+		}
+
+		$this->state = $int;
 
 		if ($this->reload) {
 			$int += 100;
 		}
-
-		if (Daemon::$config->logworkersetstatus->value) {
-			$this->log('status is ' . $int);
-		}
-
-		return shmop_write(Daemon::$shm_wstate, chr($int), $this->id - 1);
+		Daemon::$shm_wstate->write(chr($int), $this->id - 1);
+		return true;
 	}
 
 	/**
@@ -535,14 +623,15 @@ class Daemon_WorkerThread extends Thread {
 			$this->log('caught SIGTERM.');
 		}
 
-		$this->shutdown();
+		$this->breakMainLoop = true;
+		$this->eventBase->exit();
 	}
 
 	/**
 	 * Handler of the SIGQUIT (graceful shutdown) signal in worker process.
 	 * @return void
 	 */
-	public function sigquit() {
+	protected function sigquit() {
 		if (Daemon::$config->logsignals->value) {
 			$this->log('caught SIGQUIT.');
 		}
@@ -554,7 +643,7 @@ class Daemon_WorkerThread extends Thread {
 	 * Handler of the SIGHUP (reload config) signal in worker process.
 	 * @return void
 	 */
-	public function sighup() {
+	protected function sighup() {
 		if (Daemon::$config->logsignals->value) {
 			$this->log('caught SIGHUP (reload config).');
 		}
@@ -563,14 +652,14 @@ class Daemon_WorkerThread extends Thread {
 			Daemon::loadConfig(Daemon::$config->configfile->value);
 		}
 
-		$this->update = TRUE;
+		$this->update = true;
 	}
 
 	/**
 	 * Handler of the SIGUSR1 (re-open log-file) signal in worker process.
 	 * @return void
 	 */
-	public function sigusr1() {
+	protected function sigusr1() {
 		if (Daemon::$config->logsignals->value) {
 			$this->log('caught SIGUSR1 (re-open log-file).');
 		}
@@ -582,35 +671,41 @@ class Daemon_WorkerThread extends Thread {
 	 * Handler of the SIGUSR2 (graceful shutdown for update) signal in worker process.
 	 * @return void
 	 */
-	public function sigusr2() {
+	protected function sigusr2() {
 		if (Daemon::$config->logsignals->value) {
 			$this->log('caught SIGUSR2 (graceful shutdown for update).');
 		}
 
-		$this->reload = TRUE;
-		$this->reloadTime = microtime(TRUE) + $this->reloadDelay;
-		$this->setStatus($this->currentStatus);
+		$this->gracefulRestart();
+	}
+
+	/**
+	 * Graceful restart
+	 * @return void
+	 */
+	public function gracefulRestart() {
+		$this->reload = true;
+		$this->reloadTime = microtime(true) + $this->reloadDelay;
+		$this->setState($this->state);
 	}
 
 	/**
 	 * Handler of the SIGTTIN signal in worker process.
 	 * @return void
 	 */
-	public function sigttin() { }
+	protected function sigttin() {}
 
 	/**
-	 * Handler of the SIGXSFZ signal in worker process.
+	 * Handler of the SIGPIPE signal in worker process.
 	 * @return void
 	 */
-	public function sigxfsz() {
-		$this->log('SIGXFSZ.');
-	}
+	protected function sigpipe() {}
 
 	/**
 	 * Handler of non-known signals.
 	 * @return void
 	 */
-	public function sigunknown($signo) {
+	protected function sigunknown($signo) {
 		if (isset(Thread::$signals[$signo])) {
 			$sig = Thread::$signals[$signo];
 		} else {
@@ -624,9 +719,7 @@ class Daemon_WorkerThread extends Thread {
 	 * Destructor of worker thread.
 	 * @return void
 	 */
-	public function __destruct()
-	{
-		$this->setStatus(0x03);
+	public function __destruct() {
+		$this->setState(Daemon::WSTATE_SHUTDOWN);
 	}
-
 }

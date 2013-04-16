@@ -10,10 +10,9 @@
  */
 class Daemon_ConfigEntryExtFunc extends Daemon_ConfigEntry {
 
-	public function HumanToPlain($value) {
+	public static function HumanToPlain($value) {
 		$cb = include($value);
-
-		return is_callable($cb) ? $cb : NULL;
+		return is_callable($cb) ? $cb : null;
 	}
 
 }

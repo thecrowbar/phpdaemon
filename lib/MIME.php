@@ -5,7 +5,12 @@
  */
 class MIME {
 	
-	private static $fileTypes = array(
+	/**
+	 * MIME types
+	 * @static
+	 * @var hash
+	 */
+	protected static $fileTypes = [
 		'txt'  => 'text/plain',
 		'htm'  => 'text/html',
 		'html' => 'text/html',
@@ -58,17 +63,19 @@ class MIME {
 		// open office
 		'odt' => 'application/vnd.oasis.opendocument.text',
 		'ods' => 'application/vnd.oasis.opendocument.spreadsheet',
-	);
+	];
 	
 	/**
 	 * Returns MIME type of the given file.	
-	 * @param string - Path
-	 * @return string - MIME type.
+	 * @static
+	 * @param string Path
+	 * @return string MIME type.
 	 */
 	public static function get($path) {
 		$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
-		if (isset(self::$fileTypes[$ext])) {
-			return self::$fileTypes[$ext];
+		if (!isset(self::$fileTypes[$ext])) {
+			return false;
 		}
+		return self::$fileTypes[$ext];
 	}
 }

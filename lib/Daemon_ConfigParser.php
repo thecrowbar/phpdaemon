@@ -17,58 +17,109 @@ class Daemon_ConfigParser {
 	const T_BLOCK = 5;
 	const T_CVALUE = 5;
 
-	private $file;
-	private $line = 1;
-	private $col = 1;
-	public $p = 0;
-	public $state = array();
-	private $result;
-	public $errorneus = FALSE;
+	/**
+	 * Config file path
+	 * @var string
+	 */
+	protected $file;
+
+	/**
+	 * Current line number
+	 * @var number
+	 */
+	protected $line = 1;
+
+	/**
+	 * Current column number
+	 * @var number
+	 */
+	protected $col = 1;
+
+	/**
+	 * Pointer (current offset)
+	 * @var integer
+	 */
+	protected $p = 0;
+
+	/**
+	 * State stack
+	 * @var array
+	 */
+	protected $state = [];
+
+	/**
+	 * Target object
+	 * @var object
+	 */
+	protected $target;
+
+	/**
+	 * Errorneous?
+	 * @var boolean
+	 */
+	protected $erroneous = false;
+
+	/**
+	 * Errorneous?
+	 * @return boolean
+	 */
+	public function isErrorneous() {
+		return $this->erroneous;
+	}
+
+	/**
+	 * Parse config file
+	 * @param string File path
+	 * @param object Target
+	 * @param boolean Included? Default is false
+	 * @return Daemon_ConfigParser
+	 */
+	public static function parse($file, $target, $included = false) {
+		return new self($file, $target, $included);
+	}
 
 	/**
 	 * Constructor
 	 * @return void
 	 */
-	public function __construct($file, $config, $included = FALSE)
-	{
-		$cfg = $this;
-		$cfg->file = $file;
-		$cfg->result = $config;
-		$cfg->revision = ++Daemon_Config::$lastRevision;
-		$cfg->data = file_get_contents($file);
+	public function __construct($file, $target, $included = false) {
+		$this->file = $file;
+		$this->target = $target;
+		$this->revision = ++Daemon_Config::$lastRevision;
+		$this->data = file_get_contents($file);
 		
-		if (substr($cfg->data,0,2) === '#!') 	{
+		if (substr($this->data, 0, 2) === '#!') {
 			if (!is_executable($file)) {
 				$this->raiseError('Shebang (#!) detected in the first line, but file hasn\'t +x mode.');
 				return;
 			}
-			$cfg->data = shell_exec($file);
+			$this->data = shell_exec($file);
 		}
 		
-		$cfg->data = str_replace("\r", '', $cfg->data);
-		$cfg->len = strlen($cfg->data);
-		$cfg->state[] = array(self::T_ALL, $cfg->result);
-		$cfg->tokens = array(
-			self::T_COMMENT => function($cfg, $c) {
+		$this->data = str_replace("\r", '', $this->data);
+		$this->len = strlen($this->data);
+		$this->state[] = [self::T_ALL, $this->target];
+		$this->tokens = [
+			self::T_COMMENT => function($c) {
 				if ($c === "\n") {
-					array_pop($cfg->state);
+					array_pop($this->state);
 				}
 			},
-			self::T_STRING => function($cfg, $q) {
+			self::T_STRING => function($q) {
 				$str = '';
-				++$cfg->p;
+				++$this->p;
 
-				for (;$cfg->p < $cfg->len;++$cfg->p) {
-					$c = $cfg->getCurrentChar();
+				for (; $this->p < $this->len; ++$this->p) {
+					$c = $this->getCurrentChar();
 
 					if ($c === $q) {
-						++$cfg->p;
+						++$this->p;
 						break;
 					}
 					elseif ($c === '\\') {
-						if ($cfg->getNextChar() === $q) {
+						if ($this->getNextChar() === $q) {
 							$str .= $q;
-							++$cfg->p;
+							++$this->p;
 						} else {
 							$str .= $c;
 						}
@@ -77,60 +128,68 @@ class Daemon_ConfigParser {
 					}
 				}
 
-				if ($cfg->p >= $cfg->len) {
-					$cfg->raiseError('Unexpected End-Of-File.');
+				if ($this->p >= $this->len) {
+					$this->raiseError('Unexpected End-Of-File.');
 				}
 				
 				return $str;
 			},
-			self::T_ALL => function($cfg, $c) {
+			self::T_ALL => function($c) {
 				if (ctype_space($c)) { }
 				elseif ($c === '#') {
-					$cfg->state[] = array(Daemon_ConfigParser::T_COMMENT);
+					$this->state[] = [Daemon_ConfigParser::T_COMMENT];
 				}
 				elseif ($c === '}') {
-					if (sizeof($cfg->state) > 1) {
-						$cfg->purgeScope($cfg->getCurrentScope());
-						array_pop($cfg->state);
+					if (sizeof($this->state) > 1) {
+						$this->purgeScope($this->getCurrentScope());
+						array_pop($this->state);
 					} else {
-						$cfg->raiseError('Unexpected \'}\'');
+						$this->raiseError('Unexpected \'}\'');
 					}
 				}
 				elseif (ctype_alnum($c)) {
-					$elements = array('');
-					$elTypes = array(NULL);
+					$elements = [''];
+					$elTypes = [null];
 					$i = 0;
 					$tokenType = 0;
+					$newLineDetected = null;
 
-					for (;$cfg->p < $cfg->len; ++$cfg->p) {
-						$c = $cfg->getCurrentChar();
+					for (;$this->p < $this->len; ++$this->p) {
+						$prePoint = [$this->line, $this->col - 1];
+						$c = $this->getCurrentChar();
 
-						if (ctype_space($c) || $c === '=') {
-							if ($elTypes[$i] !== NULL)	{
+						if (ctype_space($c) || $c === '=' || $c === ',') {
+							if ($c === "\n") {
+								$newLineDetected = $prePoint;
+							}
+							if ($elTypes[$i] !== null)	{
 								++$i;
-								$elTypes[$i] = NULL;
+								$elTypes[$i] = null;
 							}
 						}
 						elseif (
 							($c === '"') 
 							|| ($c === '\'')
 						) {
-							if ($elTypes[$i] != NULL)	 {
-								$cfg->raiseError('Unexpected T_STRING.');
+							if ($elTypes[$i] != null) {
+								$this->raiseError('Unexpected T_STRING.');
 							}
 
-							$string = call_user_func($cfg->tokens[Daemon_ConfigParser::T_STRING], $cfg, $c);
-							--$cfg->p;
+							$string = $this->token(Daemon_ConfigParser::T_STRING, $c);
+							--$this->p;
 
-							if ($elTypes[$i] === NULL)	 {
+							if ($elTypes[$i] === null) {
 								$elements[$i] = $string;
 								$elTypes[$i] = Daemon_ConfigParser::T_STRING;
 							}
 						}
 						elseif ($c === '}') {
-							$cfg->raiseError('Unexpected \'}\' instead of \';\' or \'{\'');
+							$this->raiseError('Unexpected \'}\' instead of \';\' or \'{\'');
 						}
 						elseif ($c === ';') {
+							if ($newLineDetected) {
+								$this->raiseError('Unexpected new-line instead of \';\'', 'notice', $newLineDetected[0], $newLineDetected[1]);
+							}
 							$tokenType = Daemon_ConfigParser::T_VAR;
 							break;
 						}
@@ -139,7 +198,7 @@ class Daemon_ConfigParser {
 							break;
 						} else {
 							if ($elTypes[$i] === Daemon_ConfigParser::T_STRING)	 {
-								$cfg->raiseError('Unexpected T_CVALUE.');
+								$this->raiseError('Unexpected T_CVALUE.');
 							} else {
 								if (!isset($elements[$i])) {
 									$elements[$i] = '';
@@ -150,7 +209,6 @@ class Daemon_ConfigParser {
 							}
 						}
 					}
-
 					foreach ($elTypes as $k => $v) {
 						if (Daemon_ConfigParser::T_CVALUE === $v) {
 							if (ctype_digit($elements[$k])) {
@@ -173,94 +231,97 @@ class Daemon_ConfigParser {
 							}
 						}
 					}
-
 					if ($tokenType === 0) {
-						$cfg->raiseError('Expected \';\' or \'{\''); 
+						$this->raiseError('Expected \';\' or \'{\''); 
 					}
 					elseif ($tokenType === Daemon_ConfigParser::T_VAR) {
 						$name = str_replace('-', '', strtolower($elements[0]));
-						$scope = $cfg->getCurrentScope();
+						if (sizeof($elements) > 2) {
+							$value = array_slice($elements, 1);
+						} else {
+							$value = isset($elements[1]) ? $elements[1] : null;
+						}
+						$scope = $this->getCurrentScope();
 						
 						if ($name === 'include') {
-							$path = $elements[1];
-							if (substr($path,0,1) !== '/') {
-								$path = 'conf/'.$path;
+							if (!is_array($value)) {
+								$value = [$value];
 							}
-							$files = glob($path);
-							if ($files) {
-								foreach ($files as $fn) {
-									$parser = new Daemon_ConfigParser($fn, $scope, true);
+							foreach ($value as $path) {
+								if (substr($path, 0, 1) !== '/') {
+									$path = 'conf/' . $path;
+								}
+								$files = glob($path);
+								if ($files) foreach ($files as $fn) {
+									Daemon_ConfigParser::parse($fn, $scope, true);
 								}
 							}
-						} elseif (substr(strtolower($elements[0]),0,4) === 'mod-') {
-							$cfg->raiseError('Variable started with \'mod-\'. This style is deprecated. You should replace it with block.');
-						} elseif (isset($scope->{$name})) {
-							if ($scope->{$name}->source !== 'cmdline')	{
-								if (!isset($elements[1])) {
-									$elements[1] = true;
-									$elTypes[1] = Daemon_ConfigParser::T_CVALUE;
+						} else {
+							if ($value === null) {
+								$value = true;
+							 	$elements[1] = true;
+							 	$elTypes[1] = Daemon_ConfigParser::T_CVALUE;
+							}
+							if (isset($scope->{$name})) {
+								if ($scope->{$name}->source !== 'cmdline')	{
+									if (($elTypes[1] === Daemon_ConfigParser::T_CVALUE) && is_string($value)) {
+										$scope->{$name}->setHumanValue($value);
+									} else {
+										$scope->{$name}->setValue($value);
+									}
+									$scope->{$name}->source = 'config';
+									$scope->{$name}->revision = $this->revision;
 								}
-								if (
-									($elTypes[1] === Daemon_ConfigParser::T_CVALUE) 
-									&& is_string($elements[1])
-								) {
-									$scope->{$name}->setHumanValue($elements[1]);
-								} else {
-									$scope->{$name}->setValue($elements[1]);
-								}
+							} elseif (sizeof($this->state) > 1) {
+								$scope->{$name} = new Daemon_ConfigEntry();
 								$scope->{$name}->source = 'config';
-								$scope->{$name}->revision = $cfg->revision;
+								$scope->{$name}->revision = $this->revision;
+								$scope->{$name}->setValue($value);
+								$scope->{$name}->setValueType($value);
 							}
-						} elseif (sizeof($cfg->state) > 1) {
-							$scope->{$name} = new Daemon_ConfigEntry();
-							$scope->{$name}->source = 'config';
-							$scope->{$name}->revision = $cfg->revision;
-							if (!isset($elements[1])) {
-							 $elements[1] = true;
-							 $elTypes[1] = Daemon_ConfigParser::T_CVALUE;
+							else {
+								$this->raiseError('Unrecognized parameter \''.$name.'\'');
 							}
-							$scope->{$name}->setValue($elements[1]);
-							$scope->{$name}->setValueType($elTypes[1]);
 						}
-						else {$cfg->raiseError('Unrecognized parameter \''.$name.'\'');}
 					}
 					elseif ($tokenType === Daemon_ConfigParser::T_BLOCK) {
-						$scope = $cfg->getCurrentScope();
+						$scope = $this->getCurrentScope();
 						$sectionName = implode('-', $elements);
 						$sectionName = strtr($sectionName, '-. ', ':::');
 						if (!isset($scope->{$sectionName})) {
 							$scope->{$sectionName} = new Daemon_ConfigSection;
 						}
 						$scope->{$sectionName}->source = 'config';
-						$scope->{$sectionName}->revision = $cfg->revision;
-						$cfg->state[] = array(
+						$scope->{$sectionName}->revision = $this->revision;
+						$this->state[] = [
 							Daemon_ConfigParser::T_ALL,
 							$scope->{$sectionName},
-						);
+						];
 					}
 				} else {
-					$cfg->raiseError('Unexpected char \''.Debug::exportBytes($c).'\'');
+					$this->raiseError('Unexpected char \''.Debug::exportBytes($c).'\'');
 				}
 			}
-		);
+		];
 
-		for (;$cfg->p < $cfg->len; ++$cfg->p) {
-			$c = $cfg->getCurrentChar();
+		for (;$this->p < $this->len; ++$this->p) {
+			$c = $this->getCurrentChar();
 			$e = end($this->state);
-			$cfg->token($e[0], $c);
+			$this->token($e[0], $c);
 		}
-		if (!$included) {$this->purgeScope($this->result);}
+		if (!$included) {
+			$this->purgeScope($this->target);
+		}
 	}
 	
 	/**
 	 * Removes old config parts after updating.
 	 * @return void
 	 */
-	public function purgeScope($scope) {
-		$cfg = $this;
+	protected function purgeScope($scope) {
 		foreach ($scope as $name => $obj) {
 			if ($obj instanceof Daemon_ConfigEntry) {
-					if ($obj->source === 'config' && ($obj->revision < $cfg->revision))	{
+					if ($obj->source === 'config' && ($obj->revision < $this->revision))	{
 						if (!$obj->resetToDefault()) {
 							unset($scope->{$name});
 						}
@@ -268,7 +329,7 @@ class Daemon_ConfigParser {
 			}
 			elseif ($obj instanceof Daemon_ConfigSection) {
 				
-				if ($obj->source === 'config' && ($obj->revision < $cfg->revision))	{
+				if ($obj->source === 'config' && ($obj->revision < $this->revision))	{
 					if (sizeof($obj) === 0) {
 						unset($scope->{$name});
 					}
@@ -296,27 +357,33 @@ class Daemon_ConfigParser {
 	 * @param string Level.
 	 * @return void
 	 */
-	public function raiseError($msg, $level = 'emerg') {
+	public function raiseError($msg, $level = 'emerg', $line = null, $col = null) {
 		if ($level === 'emerg') {
-			$this->errorneus = true;
+			$this->errorneous = true;
+		}
+		if ($line === null) {
+			$line = $this->line;
+		}
+		if ($col === null) {
+			$col = $this->col -1 ;
 		}
 
-		Daemon::log('[conf#' . $level . '][' . $this->file . ' L:' . $this->line . ' C: ' . ($this->col-1) . ']   '.$msg);
+		Daemon::log('[conf#' . $level . '][' . $this->file . ' L:' . $line . ' C: ' . $col . ']   '.$msg);
 	}
 
 	/**
-	 * executes token-parse callback.
-	 * @return void
+	 * Executes token server.
+	 * @return mixed|void
 	 */
-	public function token($token, $c) {
-		call_user_func($this->tokens[$token], $this, $c);
+	protected function token($token, $c) {
+		return call_user_func($this->tokens[$token], $c);
 	}
 	
 	/**
 	 * Current character.
 	 * @return string Character.
 	 */
-	public function getCurrentChar() {
+	protected function getCurrentChar() {
 		$c = substr($this->data, $this->p, 1);
 
 		if ($c === "\n") {
@@ -333,7 +400,7 @@ class Daemon_ConfigParser {
 	 * Returns next character.
 	 * @return string Character.
 	 */
-	public function getNextChar() {
+	protected function getNextChar() {
 		return substr($this->data, $this->p + 1, 1);
 	}
 
@@ -342,8 +409,7 @@ class Daemon_ConfigParser {
 	 * @param integer Number of characters to rewind back.
 	 * @return void
 	 */
-	public function rewind($n) {
+	protected function rewind($n) {
 		$this->p -= $n;
 	}
-
 }

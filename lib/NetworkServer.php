@@ -7,39 +7,27 @@
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
-class NetworkServer extends ConnectionPool {
-	
+abstract class NetworkServer extends ConnectionPool {
+
 	/**
-	 * Called when a request to HTTP-server looks like WebSocket handshake query.
-	 * @return void
+	 * Called when a request to HTTP-server looks like another connection.
+	 * @return boolean Success
 	 */
 
-	public function inheritFromRequest($req, $pool) {
-		$oldConn = $req->conn;
-		if ($req instanceof Request) {
-			$req->free();
-		}
-		if (!$oldConn) {
+	public function inheritFromRequest($req, $oldConn) {
+		if (!$oldConn || !$req) {
 			return false;
 		}
 		$class = $this->connectionClass;
 		$conn = new $class(null, $this);
-		$conn->fd = $oldConn->fd;
 		$this->attach($conn);
-		$conn->buffer = $oldConn->buffer;
-		$conn->fd = $oldConn->fd;
-		unset($oldConn->buffer); // to prevent freeing the buffer
-		unset($oldConn->fd); // to prevent closing the socket
-		$pool->detach($oldConn);
-		$set = event_buffer_set_callback(
-			$conn->buffer, 
-			array($conn, 'onReadEvent'),
-			array($conn, 'onWriteEvent'),
-			array($conn, 'onFailureEvent')
-		);
-		$conn->addr = $req->attrs->server['REMOTE_ADDR'];
-		$conn->server = $req->attrs->server;
-		$conn->firstline = true;
+		$conn->setFd($oldConn->getFd(), $oldConn->getBev());
+		$oldConn->unsetFd();
+		$oldConn->pool->detach($oldConn);
 		$conn->onInheritanceFromRequest($req);
+		if ($req instanceof Request) {
+			$req->free();
+		}
+		return true;
 	}
 }

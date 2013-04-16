@@ -7,22 +7,64 @@
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
+// @TODO: respawning IPCThread on unexpected failures
 class Daemon_IPCThread extends Thread {
+	/**
+	 * Event base
+	 * @var EventBase
+	 */
 	public $eventBase;
-	public $timeoutEvent;
-	public $breakMainLoop = FALSE;
-	public $reloadReady = FALSE;
-	public $delayedSigReg = TRUE;
-	public $instancesCount = array();
-	public $connection;
+
+	/**
+	 * Break main loop?
+	 * @var boolean
+	 */
+	protected $breakMainLoop = false;
+
+	/**
+	 * Reload ready?
+	 * @var boolean
+	 */
+	protected $reloadReady = false;
+
+	/**
+	 * If true, we do not register signals automatically at start
+	 * @var boolean
+	 */
+	protected $delayedSigReg = true;
+
+	/**
+	 * Instances count
+	 * @var hash
+	 */
+	public $instancesCount = [];
+	
+	/**
+	 * File watcher
+	 * @var FileWatcher
+	 */
 	public $fileWatcher;
+
+	/**
+	 * If true, we do not register signals automatically at start
+	 * @var boolean
+	 */
 	public $reload = false;
+	
 	/**
 	 * Runtime of Worker process.
 	 * @return void
 	 */
-	public function run() {
-		FS::init();
+	protected function run() {
+		if (Daemon::$process instanceof Daemon_MasterThread) {
+			Daemon::$process->unregisterSignals();
+		}
+		if (Daemon::$process->eventBase) {
+			Daemon::$process->eventBase->reinit();
+			$this->eventBase = Daemon::$process->eventBase;
+		} else {
+			$this->eventBase = new EventBase();
+		}
 		Daemon::$process = $this;
 		if (Daemon::$logpointerAsync) {
 			$oldfd = Daemon::$logpointerAsync->fd;
@@ -30,7 +72,6 @@ class Daemon_IPCThread extends Thread {
 			Daemon::$logpointerAsync = null;
 		}
 		class_exists('Timer');
-		class_exists('Daemon_TimedEvent');
 
 		if (Daemon::$config->autogc->value > 0) {
 			gc_enable();
@@ -38,8 +79,6 @@ class Daemon_IPCThread extends Thread {
 			gc_disable();
 		}
 		$this->prepareSystemEnv();
-
-		$this->eventBase = event_base_new();
 		$this->registerEventSignals();
 		FS::init(); // re-init
 		FS::initEvent();
@@ -49,7 +88,9 @@ class Daemon_IPCThread extends Thread {
 		$this->IPCManager = Daemon::$appResolver->getInstanceByAppName('IPCManager');
 		
 		while (!$this->breakMainLoop) {
-			event_base_loop($this->eventBase);
+			if (!$this->eventBase->dispatch()) {
+				break;
+			}
 		}
 	}
 
@@ -57,11 +98,11 @@ class Daemon_IPCThread extends Thread {
 	 * Setup settings on start.
 	 * @return void
 	 */
-	public function prepareSystemEnv() {
+	protected function prepareSystemEnv() {
 		proc_nice(Daemon::$config->ipcthreadpriority->value);
 		register_shutdown_function(array($this,'shutdown'));
 		
-		$this->setproctitle(
+		$this->setTitle(
 			Daemon::$runName . ': IPC process'
 			. (Daemon::$config->pidfile->value !== Daemon::$config->defaultpidfile->value
 				? ' (' . Daemon::$config->pidfile->value . ')' : '')
@@ -87,7 +128,7 @@ class Daemon_IPCThread extends Thread {
 		}
 
 		if (isset(Daemon::$config->group->value)) {
-			if ($sg === FALSE) {
+			if ($sg === false) {
 				$this->log('Couldn\'t change group to \'' . Daemon::$config->group->value . '\'. You must replace config-variable \'group\' with existing group.');
 				exit(0);
 			}
@@ -101,7 +142,7 @@ class Daemon_IPCThread extends Thread {
 		}
 
 		if (isset(Daemon::$config->user->value)) {
-			if ($su === FALSE) {
+			if ($su === false) {
 				$this->log('Couldn\'t change user to \'' . Daemon::$config->user->value . '\', user not found. You must replace config-variable \'user\' with existing username.');
 				exit(0);
 			}
@@ -134,40 +175,21 @@ class Daemon_IPCThread extends Thread {
 	 * Reloads additional config-files on-the-fly.
 	 * @return void
 	 */
-	private function update() {
+	protected function update() {
 		FS::updateConfig();
-		foreach (Daemon::$appInstances as $k => $app) {
+		foreach (Daemon::$appInstances as $app) {
 			foreach ($app as $appInstance) {
-				$appInstance->handleStatus(2);
+				$appInstance->handleStatus(AppInstance::EVENT_CONFIG_UPDATED);
 			}
 		}
 	}
 
 	/**
-	 * @todo description?
-	 */
-	public function checkState() {
-		if ($this->terminated) {
-			return FALSE;
-		}
-
-		return TRUE;
-	}
-
-	/**
-	 * Asks the running applications the whether we can go to shutdown current (old) worker.
-	 * @return boolean - Ready?
-	 */
-	public function appInstancesReloadReady() {
-		return true;
-	}
-
-	/**
-	 * @todo description?
+	 * Shutdown thread
 	 * @param boolean - Hard? If hard, we shouldn't wait for graceful shutdown of the running applications.
 	 * @return boolean - Ready?
 	 */
-	public function shutdown($hard = FALSE) {
+	public function shutdown($hard = false) {
 		$error = error_get_last(); 
 		if ($error) {
 			if ($error['type'] === E_ERROR) {
@@ -185,7 +207,7 @@ class Daemon_IPCThread extends Thread {
 
 		@ob_flush();
 
-		if ($this->terminated === TRUE) {
+		if ($this->terminated === true) {
 			if ($hard) {
 				exit(0);
 			}
@@ -193,11 +215,11 @@ class Daemon_IPCThread extends Thread {
 			return;
 		}
 
-		$this->terminated = TRUE;
+		$this->terminated = true;
 		if ($hard) {
 			exit(0);
 		}
-		//FS::waitAllEvents(); // ensure that all I/O events completed before suicide
+		FS::waitAllEvents(); // ensure that all I/O events completed before suicide
 		posix_kill(posix_getppid(), SIGCHLD); // praying to Master
 		exit(0); // R.I.P.
 	}
@@ -211,7 +233,7 @@ class Daemon_IPCThread extends Thread {
 			$this->log('caught SIGINT.');
 		}
 
-		$this->shutdown(TRUE);
+		$this->shutdown(true);
 	}
 
 	/**
@@ -251,7 +273,7 @@ class Daemon_IPCThread extends Thread {
 			Daemon::loadConfig(Daemon::$config->configfile->value);
 		}
 
-		$this->update = TRUE;
+		$this->update = true;
 	}
 
 	/**
@@ -274,7 +296,6 @@ class Daemon_IPCThread extends Thread {
 		if (Daemon::$config->logsignals->value) {
 			$this->log('caught SIGUSR2 (graceful shutdown for update).');
 		}
-		$this->sigterm();
 	}
 
 	/**

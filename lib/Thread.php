@@ -8,62 +8,63 @@
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
 abstract class Thread {
-
-	public $id;
-
+	
 	/**
 	 * Process identificator
 	 * @var int
 	 */
-	public $pid;
+	protected $id;
 
 	/**
-	 * @todo Add a description
+	 * PID
+	 * @var int
+	 */
+	protected $pid;
+
+	/**
+	 * Is this thread shutdown?
 	 * @var boolean
 	 */
-	public $shutdown = FALSE;
+	protected $shutdown = false;
 
 	/**
-	 * @todo Add a description
+	 * Is this thread terminated?
 	 * @var boolean
 	 */
-	public $terminated = FALSE;
+	protected $terminated = false;
 
 	/**
-	 * @todo Add a description
+	 * Collections of childrens
 	 * @var array
 	 */
-	public $collections = array();
+	protected $collections = [];
 
-	public $timeouts = array();
-
-	private static $signalsno = array(
+	/**
+	 * Array of known signal numbers
+	 * @var array
+	 */
+	protected static $signalsno = [
 		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 
 		18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
-	);
+	];
 	
-	public $sigEvents = array();
+	/**
+	 * Storage of signal handler events
+	 * @var array
+	 */
+	protected $sigEvents = [];
 	
-	public static $signals = array(
+	/**
+	 * Hash of known signal [no => name, ...]
+	 * @var array
+	 */
+	public static $signals = [
 		SIGHUP    => 'SIGHUP',
-		SIGINT    => 'SIGINT',
-		SIGQUIT   => 'SIGQUIT',
-		SIGILL    => 'SIGILL',
-		SIGTRAP   => 'SIGTRAP',
-		SIGABRT   => 'SIGABRT',
-		7         => 'SIGEMT',
-		SIGFPE    => 'SIGFPE',
-		SIGKILL   => 'SIGKILL',
-		SIGBUS    => 'SIGBUS',
-		SIGSEGV   => 'SIGSEGV',
 		SIGSYS    => 'SIGSYS',
 		SIGPIPE   => 'SIGPIPE',
 		SIGALRM   => 'SIGALRM',
 		SIGTERM   => 'SIGTERM',
-		SIGURG    => 'SIGURG',
 		SIGSTOP   => 'SIGSTOP',
-		SIGTSTP   => 'SIGTSTP',
-		SIGCONT   => 'SIGCONT',
 		SIGCHLD   => 'SIGCHLD',
 		SIGTTIN   => 'SIGTTIN',
 		SIGTTOU   => 'SIGTTOU',
@@ -73,18 +74,61 @@ abstract class Thread {
 		SIGVTALRM => 'SIGVTALRM',
 		SIGPROF   => 'SIGPROF',
 		SIGWINCH  => 'SIGWINCH',
-		28        => 'SIGINFO',
 		SIGUSR1   => 'SIGUSR1',
 		SIGUSR2   => 'SIGUSR2',
-	);
+	];
 	
-	
+	/**
+	 * Get PID of this Thread
+	 * @return integer
+	 */
+	public function getPid() {
+		return $this->pid;
+	}
+
+
+	/**
+	 * Set ID of this Thread
+	 * @param integer Id
+	 * @return void
+	 */
+	public function setId($id) {
+		$this->id = $id;
+	}
+
+	/**
+	 * Get ID of this Thread
+	 * @return integer
+	 */
+	public function getId() {
+		return $this->id;
+	}
+
+	/**
+	 * Is this thread terminated?
+	 * @return boolean
+	 */
+	public function isTerminated() {
+		return $this->terminated;
+	}
+
+	/**
+	 * Invoke magic method
+	 * @return void
+	 */
+
+	public function __invoke() {
+		$this->run();
+		$this->shutdown();
+	}
 	/**
 	 * Register signals.
 	 * @return void
 	 */
-	public function registerEventSignals()
-	{
+	protected function registerEventSignals() {
+		if (!$this->eventBase) {
+			return;
+		}
 		foreach (self::$signals as $no => $name) {
 			if (
 				($name === 'SIGKILL') 
@@ -92,23 +136,23 @@ abstract class Thread {
 			) {
 				continue;
 			}
-			
-			$ev = event_new();
-			if (
-				!event_set(
-					$ev,
-					$no,
-					EV_SIGNAL | EV_PERSIST,
-					array($this,'eventSighandler'),
-					array($no)
-				)
-			) {
-				throw new Exception('Cannot event_set for '.$name.' signal');
+			$ev = Event::signal($this->eventBase, $no, array($this,'eventSighandler'), array($no));
+			if (!$ev) {
+				$this->log('Cannot event_set for '.$name.' signal');
 			}
-			
-			event_base_set($ev, $this->eventBase);
-			event_add($ev);
+			$ev->add();
 			$this->sigEvents[$no] = $ev;
+		}
+	}
+
+	/**
+	 * Unregister signals.
+	 * @return void
+	 */
+	protected function unregisterSignals() {
+		foreach ($this->sigEvents as $no => $ev) {
+			$ev->free();
+			unset($this->sigEvents[$no]);
 		}
 	}
 
@@ -119,27 +163,27 @@ abstract class Thread {
 	 * @param mixed Argument.
 	 * @return void
 	 */
-	public function eventSighandler($fd, $events, $arg) {
-	  $this->sighandler($arg[0]);
+	public function eventSighandler($fd, $arg) {
+		$this->sighandler($arg[0]);
 	}
 
 	/**
 	 * Run thread process
 	 * @return void
 	 */
-	public function run() { }
+	protected function run() { }
 
 	/**
-	 * @todo Add a description
+	 * If true, we do not register signals automatically at start
 	 * @var boolean
 	 */
-	public $delayedSigReg = FALSE;
+	protected $delayedSigReg = false;
 
 	/**
 	 * Registers signals
 	 * @return void
 	 */
-	public function registerSignals()
+	protected function registerSignals()
 	{
 		foreach (self::$signals as $no => $name) {
 			if (
@@ -150,7 +194,7 @@ abstract class Thread {
 			}
 
 			if (!pcntl_signal($no, array($this, 'sighandler'), TRUE)) {
-				throw new Exception('Cannot assign ' . $name . ' signal');
+				$this->log('Cannot assign ' . $name . ' signal');
 			}
 		}
 	}
@@ -179,7 +223,6 @@ abstract class Thread {
 			}
 		} else { // we are the master
 			$this->pid = $pid;
-			return $pid;
 		}
 	}
 
@@ -201,7 +244,7 @@ abstract class Thread {
 	 * Shutdowns the current process properly
 	 * @return void
 	 */
-	public function shutdown() {
+	protected function shutdown() {
 		posix_kill(posix_getppid(), SIGCHLD);
 		exit(0);
 	}
@@ -209,16 +252,16 @@ abstract class Thread {
 	/**
 	 * Sends the signal to parent process
 	 * @param integer Signal's number
-	 * @return void
+	 * @return boolean Success
 	 */
-	private function backsig($sig) {
+	protected function backsig($sig) {
 		return posix_kill(posix_getppid(), $sig);
 	}
 
 	/**
 	 * Delays the process execution for the given number of seconds
 	 * @param integer Sleep time in seconds
-	 * @return void
+	 * @return boolean Success
 	 */
 	public function sleep($s) {
 		static $interval = 0.2;
@@ -226,13 +269,13 @@ abstract class Thread {
 
 		for ($i = 0; $i < $n; ++$i) {
 			if ($this->shutdown) {
-				return FALSE;
+				return false;
 			}
 
 			usleep($interval * 1000000);
 		}
 
-		return TRUE;
+		return true;
 	}
 
 	/**
@@ -282,28 +325,28 @@ abstract class Thread {
 	 */
 	public function stop($kill = false) {
 		$this->shutdown = true;
-
-		return posix_kill($this->pid, $kill ? SIGKILL : SIGTERM);
+		posix_kill($this->pid, $kill ? SIGKILL : SIGTERM);
 	}
 
 	/**
 	 * Checks for SIGCHLD
 	 * @return boolean Success
 	 */
-	private function waitPid() {
+	protected function waitPid() {
+		start:
 		$pid = pcntl_waitpid(-1, $status, WNOHANG);
 		if ($pid > 0) {
 			foreach ($this->collections as &$col) {
 				foreach ($col->threads as $k => &$t) {
 					if ($t->pid === $pid) {
-						$t->terminated = TRUE;
-						return TRUE;
+						$t->terminated = true;
+						goto start;
 					}
 				}
 			}
 		}
 
-		return FALSE;
+		return false;
 	}
 
 	/**
@@ -313,6 +356,31 @@ abstract class Thread {
 	 */
 	public function signal($sig) {
 		return posix_kill($this->pid, $sig);
+	}
+
+	/**
+	 * Checks if this process does exist
+	 * @return boolean Success
+	 */
+	public function ifExists() {
+		if (file_exists('/proc')) {
+			return file_exists('/proc/' . $this->pid);
+		}
+		return posix_signal($this->pid, SIGTTIN);
+	}
+
+
+	/**
+	 * Checks if given process ID does exist
+	 * @static
+	 * @param integer PID
+	 * @return boolean Success
+	 */
+	public static function ifExistsByPid($pid) {
+		if (file_exists('/proc')) {
+			return file_exists('/proc/' . $pid);
+		}
+		return posix_signal($pid, SIGTTIN);
 	}
 
 	/**
@@ -335,25 +403,38 @@ abstract class Thread {
 	/**
 	 * Sets a title of the current process
 	 * @param string Title
-	 * @return void
+	 * @return boolean Success
 	 */
-	protected function setproctitle($title) {
+	protected function setTitle($title) {
+		if (is_callable('cli_set_process_title')) {
+			return cli_set_process_title($title);
+		}
 		if (Daemon::loadModuleIfAbsent('proctitle')) {
 			return setproctitle($title);
 		}
+		return false;
+	}
 
-		return FALSE;
+	/**
+	 * Returns a title of the current process
+	 * @return string
+	 */
+	protected function getTitle() {
+		if (is_callable('cli_get_process_title')) {
+			return cli_get_process_title();
+		}
+		return false;
 	}
 
 	/**
 	 * Waits for signals, with a timeout
 	 * @param int Seconds
 	 * @param int Nanoseconds
-	 * @return void
+	 * @return boolean Success
 	 */
-	protected function sigwait($sec = 0, $nano = 1) {
-		$siginfo = NULL;
-		$signo = pcntl_sigtimedwait(self::$signalsno, $siginfo, $sec, $nano);
+	protected function sigwait($sec = 0, $nano = 0.3e9) {
+		$siginfo = null;
+		$signo = @pcntl_sigtimedwait(self::$signalsno, $siginfo, $sec, $nano);
 
 		if (is_bool($signo)) {
 			return $signo;
@@ -362,24 +443,20 @@ abstract class Thread {
 		if ($signo > 0) {
 			$this->sighandler($signo);
 
-			return TRUE;
+			return true;
 		}
 
-		return FALSE;
+		return false;
 	}
 }
 
-if (!function_exists('pcntl_sigtimedwait')) {
-	// @todo $signals or Thread::$signals?
+if (!function_exists('pcntl_sigtimedwait')) { // For Mac OS where missing the orignal function
 	function pcntl_sigtimedwait($signals, $siginfo, $sec, $nano) {
 		pcntl_signal_dispatch();
-
-		if (time_nanosleep($sec, $nano) === TRUE) {
-			return FALSE;
+		if (time_nanosleep($sec, $nano) === true) {
+			return false;
 		}
-
 		pcntl_signal_dispatch();
-
-		return TRUE;
+		return true;
 	}
 }

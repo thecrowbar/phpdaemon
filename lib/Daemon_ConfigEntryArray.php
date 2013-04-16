@@ -10,7 +10,7 @@
  */
 class Daemon_ConfigEntryArray extends Daemon_ConfigEntry {
 
-	public function HumanToPlain($value) {
+	public static function HumanToPlain($value) {
 		if (is_array($value)) {
 			return $value;
 		}
@@ -24,6 +24,7 @@ class Daemon_ConfigEntryArray extends Daemon_ConfigEntry {
 			if (!empty($m[1])) {
 				return substr($m[1], 1, -1);
 			}
+			return null;
 		}, $value);
 		return explode("\x00", $value);
 	}

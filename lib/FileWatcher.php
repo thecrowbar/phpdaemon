@@ -12,7 +12,7 @@ class FileWatcher {
 	public $inotify;
 	public $descriptors = array();
 	public function __construct() {
-		if (is_callable('inotify_init')) {
+		if (Daemon::loadModuleIfAbsent('inotify')) {
 			$this->inotify = inotify_init();
 			stream_set_blocking($this->inotify, 0);
 		}
@@ -63,7 +63,7 @@ class FileWatcher {
 			Daemon::log(__METHOD__ . ': Detected parse error in ' . $path);
 			return;
 		}
-		foreach ($this->files[$path] as $k => $subscriber) {
+		foreach ($this->files[$path] as $subscriber) {
 			if (is_callable($subscriber) || is_array($subscriber)) {
 				call_user_func($subscriber, $path);
 			}

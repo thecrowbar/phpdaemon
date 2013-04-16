@@ -23,14 +23,14 @@ class Pool extends AppInstance {
 	 * Constructor.
 	 * @return void
 	 */
-	public function init() {
+	protected function init() {
 		if ($this->isEnabled()) {
 			list ($class, $name) = explode(':', $this->name . ':');
 			if (!class_exists($class)) {
 				Daemon::log($class. ' class not exists.');
 				return;
 			}
-			$this->pool = call_user_func(array($class, 'getInstance'), $name);
+			$this->pool = call_user_func([$class, 'getInstance'], $name);
 			$this->pool->appInstance = $this;
 		}
 	}
@@ -43,9 +43,10 @@ class Pool extends AppInstance {
 	 * @return mixed Result
 	 */
 	public function RPCall($method, $args) {
-		if (is_callable($f = array($this->pool, 'RPCall'))) {
-			return call_user_func($f, $method, $args);
+		if (!is_callable($f = [$this->pool, 'RPCall'])) {
+			return false;
 		}
+		return call_user_func($f, $method, $args);
 	}
 
 	/**
@@ -65,7 +66,7 @@ class Pool extends AppInstance {
 	public function onConfigUpdated() {
 		if ($this->pool) {
 			$this->pool->config = $this->config;
-			return $this->pool->onConfigUpdated();
+			$this->pool->onConfigUpdated();
 		}
 	}
 
@@ -73,9 +74,9 @@ class Pool extends AppInstance {
 	 * Called when application instance is going to shutdown.
 	 * @return boolean Ready to shutdown?
 	 */
-	public function onShutdown() {
+	public function onShutdown($graceful = false) {
 		if ($this->pool) {
-			return $this->pool->onShutdown();
+			return $this->pool->onShutdown($graceful);
 		}
 		return true;
 	}

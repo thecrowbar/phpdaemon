@@ -1,5 +1,4 @@
 <?php
-
 /**
  * File
  * 
@@ -7,15 +6,100 @@
  *
  * @author Zorin Vasily <kak.serpom.po.yaitsam@gmail.com>
  */
-class File extends IOStream {
-	public $priority = 10; // low priority
+class File {
+
+	/**
+	 * Priority
+	 * @var integer
+	 */
+	public $priority = 10;
+
+	/**
+	 * Chunk size
+	 * @var integer
+	 */
 	public $chunkSize = 4096;
+
+	/**
+	 * Stat
+	 * @var hash
+	 */
 	public $stat;
-	public $offset;
+
+	/**
+	 * Current offset 
+	 * @var integer
+	 */
+	public $offset = 0;
+
+	/**
+	 * Cache key
+	 * @var string
+	 */
 	public $fdCacheKey;
+
+	/**
+	 * Append?
+	 * @var boolean
+	 */
 	public $append;
+
+	/**
+	 * Path
+	 * @var string
+	 */
 	public $path;
 
+	/**
+	 * Writing?
+	 * @var boolean
+	 */
+	public $writing = false;
+
+	/**
+	 * Closed?
+	 * @var boolean
+	 */
+	public $closed = false;
+
+	/**
+	 * File descriptor
+	 * @var mixed
+	 */
+	protected $fd;
+
+	/**
+	 * Stack of callbacks called when writing is done
+	 * @var object StackCallbacks
+	 */
+	protected $onWriteOnce;
+
+	/**
+	 * File constructor
+ 	 * @param resource File descriptor
+	 * @return void
+	 */
+	public function __construct($fd, $path) {
+		$this->fd = $fd;
+		$this->path = $path;
+		$this->onWriteOnce = new StackCallbacks;
+	}
+
+	/**
+	 * Get file descriptor
+	 * @return mixed File descriptor
+	 */	
+	public function getFd() {
+		return $this->fd;
+	}
+
+	/**
+	 * Converts string of flags to integer or standard text representation
+ 	 * @param string Mode
+ 	 * @param boolean Text?
+ 	 * @param priority
+	 * @return mixed
+	 */
 	public static function convertFlags($mode, $text = false) {
 		$plus = strpos($mode, '+') !== false;
 		$sync = strpos($mode, 's') !== false;
@@ -38,8 +122,15 @@ class File extends IOStream {
 	}
 
 
+	/**
+	 * Truncates this file
+ 	 * @param integer Offset, default is 0
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */
 	public function truncate($offset = 0, $cb = null, $pri = EIO_PRI_DEFAULT) {
-		if (!$this->fd) {
+		if (!$this->fd || $this->fd === -1) {
 			if ($cb) {
 				call_user_func($cb, $this, false);
 			}
@@ -51,13 +142,19 @@ class File extends IOStream {
 			if ($cb) {
 				call_user_func($cb, $this, $r);
 			}
-			return;
+			return $r;
 		}
-		eio_ftruncate($this->fd, $offset, $pri, $cb, $this);
+		return eio_ftruncate($this->fd, $offset, $pri, $cb, $this);
 	}
-	
+
+	/**
+	 * Stat()
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */	
 	public function stat($cb, $pri = EIO_PRI_DEFAULT) {
-		if (!is_resource($this->fd)) {
+		if (!$this->fd || $this->fd === -1) {
 			if ($cb) {
 				call_user_func($cb, $this, false);
 			}
@@ -65,21 +162,27 @@ class File extends IOStream {
 		}
 		if (!FS::$supported) {
 			call_user_func($cb, $this, FS::statPrepare(fstat($this->fd)));
-			return;
+			return false;
 		}
 		if ($this->stat) {
 			call_user_func($cb, $this, $this->stat);
-		} else {
-			eio_fstat($this->fd, $pri, function ($file, $stat) use ($cb) {
-				$stat = FS::statPrepare($stat);
-				$file->stat = $stat;
-				call_user_func($cb, $file, $stat);
-			}, $this);		
+			return true;
 		}
+		return eio_fstat($this->fd, $pri, function ($file, $stat) use ($cb) {
+			$stat = FS::statPrepare($stat);
+			$file->stat = $stat;
+			call_user_func($cb, $file, $stat);
+		}, $this);
 	}
 
+	/**
+	 * Stat() non-cached
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */	
 	public function statRefresh($cb, $pri = EIO_PRI_DEFAULT) {
-		if (!is_resource($this->fd)) {
+		if (!$this->fd || $this->fd === -1) {
 			if ($cb) {
 				call_user_func($cb, $this, false);
 			}
@@ -87,15 +190,21 @@ class File extends IOStream {
 		}
 		if (!FS::$supported) {
 			call_user_func($cb, $this, FS::statPrepare(fstat($this->fd)));
-			return;
+			return true;
 		}
-		eio_fstat($this->fd, $pri, function ($file, $stat) use ($cb) {
+		return eio_fstat($this->fd, $pri, function ($file, $stat) use ($cb) {
 			$stat = FS::statPrepare($stat);
 			$file->stat = $stat;
 			call_user_func($cb, $file, $stat);
 		}, $this);
 	}
 	
+	/**
+	 * Statvfs()
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */	
 	public function statvfs($cb, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -107,18 +216,24 @@ class File extends IOStream {
 			if ($cb) {
 				call_user_func($cb, $this, false);
 			}
-			return;
+			return false;
 		}
 		if ($this->statvfs) {
 			call_user_func($cb, $this, $this->statvfs);
-		} else {
-			eio_fstatvfs($this->fd, $pri, function ($file, $stat) use ($cb) {
-				$file->statvfs = $stat;
-				call_user_func($cb, $file, $stat);
-			}, $this);		
+			return true;
 		}
+		return eio_fstatvfs($this->fd, $pri, function ($file, $stat) use ($cb) {
+			$file->statvfs = $stat;
+			call_user_func($cb, $file, $stat);
+		}, $this);
 	}
 
+	/**
+	 * Sync()
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */	
 	public function sync($cb, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -133,6 +248,13 @@ class File extends IOStream {
 		return eio_fsync($this->fd, $pri, $cb, $this);
 	}
 	
+
+	/**
+	 * Datasync()
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */	
 	public function datasync($cb, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -146,7 +268,15 @@ class File extends IOStream {
 		}
 		return eio_fdatasync($this->fd, $pri, $cb, $this);
 	}
-	
+
+	/**
+	 * Writes data to file
+	 * @param string Data
+ 	 * @param callable Callback
+ 	 * @param [integer Offset
+ 	 * @param priority
+	 * @return resource
+	 */		
 	public function write($data, $cb = null, $offset = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -164,9 +294,31 @@ class File extends IOStream {
 			}
 			return false;
 		}
-		return eio_write($this->fd, $data, null, $offset, $pri, $cb, $this);
+		if ($cb !== null) {
+			$this->onWriteOnce->push($cb);
+		}
+		$l = strlen($data);
+		if ($offset === null) {
+			$offset = $this->offset;
+			$this->offset += $l;
+		}
+		$this->writing = true;
+		$res = eio_write($this->fd, $data, $l, $offset, $pri, function ($file, $result) {
+			$this->writing = false;
+			$this->onWriteOnce->executeAll($file, $result);
+		}, $this);
+		return $res;
 	}
 	
+
+	/**
+	 * Changes ownership of this file
+	 * @param integer User ID
+	 * @param integer Group ID
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */
 	public function chown($uid, $gid = -1, $cb, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -187,6 +339,14 @@ class File extends IOStream {
 		return eio_fchown($this->fd, $uid, $gid, $pri, $cb, $this);
 	}
 	
+	/**
+	 * touch()
+	 * @param integer Last modification time
+	 * @param integer Last access time
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */
 	public function touch($mtime, $atime = null, $cb = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -201,15 +361,26 @@ class File extends IOStream {
 			}
 			return false;
 		}
-		eio_futime($this->fd, $atime, $mtime, $pri, $cb, $this);
+		return eio_futime($this->fd, $atime, $mtime, $pri, $cb, $this);
 	}
 	
-
+	/**
+	 * Clears cache of stat() and statvfs()
+	 * @return void
+	 */
 	public function clearStatCache() {
 		$this->stat = null;
 		$this->statvfs = null;
 	}
 	
+	/**
+	 * Reads data from file
+	 * @param integer Length
+	 * @param [integer Offset
+ 	 * @param callable Callback
+ 	 * @param priority
+	 * @return resource
+	 */
 	public function read($length, $offset = null, $cb = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -224,7 +395,6 @@ class File extends IOStream {
 			return false;
 		}
 		$this->offset += $length;
-		$file = $this;
 		eio_read(
 			$this->fd,
 			$length,
@@ -236,7 +406,17 @@ class File extends IOStream {
 		return true;
 	}
 
-	public function sendfile($outfd, $cb, $offset = 0, $length = null, $pri = EIO_PRI_DEFAULT) {
+
+	/**
+	 * sendfile()
+	 * @param mixed File descriptor
+	 * @param callable Start callback
+	 * @param integer Offset
+	 * @param integer Length
+	 * @param priority
+	 * @return boolean Success
+	 */
+	public function sendfile($outfd, $cb, $startCb = null, $offset = 0, $length = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
 				call_user_func($cb, $this, false);
@@ -250,7 +430,21 @@ class File extends IOStream {
 			return false;
 		}
 		static $chunkSize = 1024;
-		$handler = function ($file, $sent) use ($outfd, $cb, &$handler, &$offset, &$length, $pri, $chunkSize) {
+		$ret = true;
+		$handler = function ($file, $sent = -1) use (&$ret, $outfd, $cb, &$handler, &$offset, &$length, $pri, $chunkSize) {
+			if ($outfd instanceof IOStream) {
+				if ($outfd->isFreed()) {
+					call_user_func($cb, $file, false);
+					return;
+				}
+				$ofd = $outfd->getFd();
+			} else {
+				$ofd = $outfd;
+			}
+			if (!$ret) {
+				call_user_func($cb, $file, false);
+				return;
+			}
 			if ($sent === -1) {
 				$sent = 0;
 			}
@@ -260,22 +454,44 @@ class File extends IOStream {
 				call_user_func($cb, $file, true);
 				return;
 			}
-			if (!is_resource($outfd)) {
+			if (!$ofd) {
 				call_user_func($cb, $file, false);
 				return;
 			}
-			eio_sendfile($outfd, $file->fd, $offset, min($chunkSize, $length), $pri, $handler, $file);
+			$c = min($chunkSize, $length);
+			$ret = eio_sendfile($ofd, $file->fd, $offset, $c, $pri, $handler, $file);
 		};
 		if ($length !== null) {
-			$handler($this, -1);
-			return;
+			if ($startCb !== null) {
+				if (!call_user_func($startCb, $file, $length, $handler)) {
+					$handler($this);
+				}
+			} else {
+				$handler($this);
+			}
+			return true;
 		}
-		$this->statRefresh(function ($file, $stat) use ($handler, &$length) {
+		$this->statRefresh(function ($file, $stat) use ($startCb, $handler, &$length) {
 			$length = $stat['size'];
-			$handler($file, -1);
+			if ($startCb !== null) {
+				if (!call_user_func($startCb, $file, $length, $handler)) {
+					$handler($file);
+				}
+			} else {
+				$handler($file);
+			}
 		}, $pri);
+		return true;
 	}
 
+	/**
+	 * readahead()
+	 * @param integer Length
+	 * @param integer Offset
+	 * @param callable Callback
+	 * @param priority
+	 * @return resource
+	 */
 	public function readahead($length, $offset = null, $cb = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -287,10 +503,10 @@ class File extends IOStream {
 			if ($cb) {
 				call_user_func($cb, $this, false);
 			}
-			return;
+			return false;
 		}
 		$this->offset += $length;
-		eio_readahead(
+		return eio_readahead(
 			$this->fd,
 			$length,
 			$offset !== null ? $offset : $this->pos,
@@ -298,9 +514,15 @@ class File extends IOStream {
 			$cb,
 			$this
 		);
-		return true;
 	}
 
+
+	/**
+	 * Reads whole file
+	 * @param callable Callback
+	 * @param priority
+	 * @return boolean Success
+	 */
 	public function readAll($cb, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -332,8 +554,15 @@ class File extends IOStream {
 			};
 			eio_read($file->fd, min($file->chunkSize, $size), 0, $pri, $handler, $file);
 		}, $pri);
+		return true;
 	}
 	
+	/**
+	 * Reads file chunk-by-chunk
+	 * @param callable Callback
+	 * @param priority
+	 * @return resource
+	 */
 	public function readAllChunked($cb = null, $chunkcb = null, $pri = EIO_PRI_DEFAULT) {
 		if (!$this->fd) {
 			if ($cb) {
@@ -341,7 +570,7 @@ class File extends IOStream {
 			}
 			return false;
 		}
-		$this->statRefresh(function ($file, $stat) use ($cb, $chunkcb, $pri) {
+		return $this->statRefresh(function ($file, $stat) use ($cb, $chunkcb, $pri) {
 			if (!$stat) {
 				call_user_func($cb, $file, false);
 				return;
@@ -361,28 +590,44 @@ class File extends IOStream {
 			eio_read($file->fd, min($file->chunkSize, $size), $offset, $pri, $handler, $file);
 		}, $pri);
 	}
+
+	/**
+	 * toString handler
+	 * @return string
+	 */
 	public function __toString() {
 		return $this->path;
 	}
+
+	/**
+	 * Set chunk size
+	 * @param integer Chunk size
+	 * @return void
+	 */
 	public function setChunkSize($n) {
 		$this->chunkSize = $n;
-	}
-	
-	public function setFd($fd) {
-		$this->fd = $fd;
-		if (!$this->inited) {
-			$this->inited = true;
-			$this->init();
-		}
-	}
-	
-	public function seek($offset, $cb, $pri) {
+	}	
+
+	/**
+	 * Move pointer to arbitrary position
+	 * @param integer offset
+	 * @param callable Callback
+	 * @param priority
+	 * @return resource
+	 */
+	public function seek($offset, $cb, $pri = EIO_PRI_DEFAULT) {
 		if (!EIO::$supported) {
 			fseek($this->fd, $offset);
-			return;
+			return false;
 		}
 		return eio_seek($this->fd, $offset, $pri, $cb, $this);
 	}
+
+
+	/**
+	 * Get current pointer position
+	 * @return integer
+	 */
 	public function tell() {
 		if (EIO::$supported) {
 			return $this->pos;
@@ -390,24 +635,38 @@ class File extends IOStream {
 		return ftell($this->fd);
 	}
 	
+
+
+	/**
+	 * Close the file
+	 * @return resource
+	 */
 	public function close() {
-		$this->closeFd();
-	}
-	public function closeFd() {
+		if ($this->closed) {
+			return false;
+		}
+		$this->closed = true;
 		if ($this->fdCacheKey !== null) {
 			FS::$fdCache->invalidate($this->fdCacheKey);
 		}
 		if ($this->fd === null) {
-			return;
+			return false;
 		}
 
 		if (!FS::$supported) {
 			fclose($this->fd);
-			return;
+			return false;
 		}
-
-		$r = eio_close($this->fd);
+		$r = eio_close($this->fd, EIO_PRI_MAX);
 		$this->fd = null;
 		return $r;
+	}
+
+	/**
+	 * Destructor
+	 * @return void
+	 */
+	public function __destruct() {
+		$this->close();
 	}
 }

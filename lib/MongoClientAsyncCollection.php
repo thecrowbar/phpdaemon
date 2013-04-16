@@ -1,13 +1,17 @@
 <?php
-class MongoClientCollection {
-    /**
+class MongoClientAsyncCollection {
+    /** Related Pool object
      * @var MongoClient
      */
 	public $pool;
-	public $name; // Name of collection.
+
+	/** Name of collection.
+     * @var string
+     */
+	public $name;
 
 	/**
-	 * Contructor of MongoClientCOllection
+	 * Contructor of MongoClientAsyncCollection
 	 * @param string Name of collection
 	 * @param object Pool
 	 * @return void
@@ -26,8 +30,7 @@ class MongoClientCollection {
 	 */
 	public function find($cb, $p = array(), $key = '') {
 		$p['col'] = $this->name;
-
-		return $this->pool->find($p, $cb, $key);
+		$this->pool->find($p, $cb, $key);
 	}
 
 	/**
@@ -39,8 +42,7 @@ class MongoClientCollection {
  	*/
 	public function findOne($cb, $p = array(), $key = '') {
 		$p['col'] = $this->name;
-
-		return $this->pool->findOne($p, $cb, $key);
+		$this->pool->findOne($p, $cb, $key);
 	}
 
 	/**
@@ -52,7 +54,7 @@ class MongoClientCollection {
 	 */
 	public function count($cb, $p = array(), $key = '') {
 		$p['col'] = $this->name;
-		return $this->pool->count($p, $cb, $key);
+		$this->pool->findCount($p, $cb, $key);
 	}
 
 	/**
@@ -61,10 +63,9 @@ class MongoClientCollection {
 	 * @param array Hash of properties (offset,  limit,  opts,  key,  col,  reduce,  initial)
 	 * @return void
 	 */
-	public function group($cb, $p = array(), $key = '') {
+	public function group($cb, $p = [], $key = '') {
 		$p['col'] = $this->name;
-	
-		return $this->pool->group($p, $cb, $key);
+		$this->pool->group($p, $cb, $key);
 	}
 
 	/**
@@ -72,7 +73,7 @@ class MongoClientCollection {
 	 * @param array Data
 	 * @param mixed Optional. Callback called when response received.
 	 * @param string Optional. Distribution key.
-	 * @return void
+	 * @return MongoId
 	 */
 	public function insert($doc, $cb = NULL, $key = '') {
 		return $this->pool->insert($this->name, $doc, $cb, $key);
@@ -83,7 +84,7 @@ class MongoClientCollection {
 	 * @param array Array of docs
 	 * @param mixed Optional. Callback called when response received.
 	 * @param string Optional. Distribution key.
-	 * @return void
+	 * @return array IDs
 	 */
 	public function insertMulti($docs, $cb = NULL, $key = '') {
 		return $this->pool->insertMulti($this->name, $docs, $cb, $key);
@@ -99,7 +100,7 @@ class MongoClientCollection {
 	 * @return void
 	 */
 	public function update($cond, $data, $flags = 0, $cb = NULL, $key = '') {
-		return $this->pool->update($this->name, $cond, $data, $flags, $cb, $key);
+		$this->pool->update($this->name, $cond, $data, $flags, $cb, $key);
 	}
 
 	/**
@@ -111,7 +112,7 @@ class MongoClientCollection {
 	 * @return void
 	 */
 	public function updateMulti($cond, $data, $cb = NULL, $key = '') {
-		return $this->pool->updateMulti($this->name, $cond, $data, $cb, $key);
+		$this->pool->updateMulti($this->name, $cond, $data, $cb, $key);
 	}
 
 	/**
@@ -124,7 +125,7 @@ class MongoClientCollection {
 	 * @return void
 	 */
 	public function upsert($cond, $data, $multi = false, $cb = NULL, $key = '') {
-		return $this->pool->upsert($this->name, $cond, $data, $multi, $cb, $key);
+		$this->pool->upsert($this->name, $cond, $data, $multi, $cb, $key);
 	}
 
 	/**
@@ -135,7 +136,7 @@ class MongoClientCollection {
 	 * @return void
 	 */
 	public function remove($cond = array(), $cb = NULL, $key = '') {
-		return $this->pool->remove($this->name, $cond, $cb, $key);
+		$this->pool->remove($this->name, $cond, $cb, $key);
 	}
 
     /**
@@ -145,9 +146,8 @@ class MongoClientCollection {
      * @param string Optional. Distribution key
      * @return void
      */
-    public function evaluate($code, $cb, $key = '')
-    {
-        $this->pool->evaluate($code, $cb, $key);
+    public function evaluate($code, $cb, $key = '') {
+		$this->pool->evaluate($code, $cb, $key);
     }
 
     /**
@@ -156,16 +156,10 @@ class MongoClientCollection {
      * @param string $key Optional. Distribution key
      * @return void
      */
-    public function autoincrement($cb, $key = '')
-    {
-        $this->evaluate(
-            'function () { '
-                . 'return db.autoincrement.findAndModify({ '
-                . 'query: {"_id":"' . $this->name . '"}, update: {$inc:{"id":1}}, new: true, upsert: true }); }',
-            function ($res) use ($cb) {
-                call_user_func($cb, $res);
-            },
-            $key
-        );
+    public function autoincrement($cb, $key = '') {
+		$this->evaluate('function () { '
+			. 'return db.autoincrement.findAndModify({ '
+			. 'query: {"_id":' . json_encode($this->name) . '}, update: {$inc:{"id":1}}, new: true, upsert: true }); }',
+		$cb, $key);
     }
 }

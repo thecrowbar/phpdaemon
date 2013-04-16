@@ -11,9 +11,7 @@ class FastCGIServerConnection extends Connection {
 	protected $highMark = 0xFFFFFF;  // initial value of the maximum amout of bytes in buffer
 	public $timeout = 180;
 
-	protected $requests = array();
-	
-	public $sendfileCap = false;
+	protected $requests = [];
 
 	const FCGI_BEGIN_REQUEST     = 1;
 	const FCGI_ABORT_REQUEST     = 2;
@@ -34,13 +32,13 @@ class FastCGIServerConnection extends Connection {
 	const STATE_CONTENT = 1;
 	const STATE_PADDING = 2;
 	
-	private static $roles = array(
+	protected static $roles = [
 		self::FCGI_RESPONDER         => 'FCGI_RESPONDER',
 		self::FCGI_AUTHORIZER        => 'FCGI_AUTHORIZER',
 		self::FCGI_FILTER            => 'FCGI_FILTER',
-	);
+	];
 
-	private static $requestTypes = array(
+	protected static $requestTypes = [
 		self::FCGI_BEGIN_REQUEST     => 'FCGI_BEGIN_REQUEST',
 		self::FCGI_ABORT_REQUEST     => 'FCGI_ABORT_REQUEST',
 		self::FCGI_END_REQUEST       => 'FCGI_END_REQUEST',
@@ -52,21 +50,29 @@ class FastCGIServerConnection extends Connection {
 		self::FCGI_GET_VALUES        => 'FCGI_GET_VALUES',
 		self::FCGI_GET_VALUES_RESULT => 'FCGI_GET_VALUES_RESULT',
 		self::FCGI_UNKNOWN_TYPE      => 'FCGI_UNKNOWN_TYPE',
-	);
+	];
 	
-	private $header;
-	private $content;
+	protected $header;
+	protected $content;
+
+
+	public function checkSendfileCap() { // @DISCUSS
+		return false;
+	}
+
+	public function checkChunkedEncCap() { // @DISCUSS
+		return false;
+	}
 
 	/**
 	 * Called when new data received.
 	 * @return void
 	 */
 	
-	public function stdin($buf) {
-		$this->buf .= $buf;
+	public function onRead() {
 		start:
 		if ($this->state === self::STATE_ROOT) {
-			$header = $this->readFromBufExact(8);
+			$header = $this->readExact(8);
 
 			if ($header === false) {
 				return;
@@ -75,7 +81,7 @@ class FastCGIServerConnection extends Connection {
 			$this->header = unpack('Cver/Ctype/nreqid/nconlen/Cpadlen/Creserved', $header);
 
 			if ($this->header['conlen'] > 0) {
-				$this->setWatermark($this->header['conlen']);
+				$this->setWatermark($this->header['conlen'], $this->header['conlen']);
 			}
 			$type = $this->header['type'];
 			$this->header['ttype'] = isset(self::$requestTypes[$type]) ? self::$requestTypes[$type] : $type;
@@ -87,34 +93,34 @@ class FastCGIServerConnection extends Connection {
 			$rid = $this->header['reqid'];
 		}
 		if ($this->state === self::STATE_CONTENT) {
-			$this->content = $this->readFromBufExact($this->header['conlen']);
+			$this->content = $this->readExact($this->header['conlen']);
 
 			if ($this->content === false) {
-				$this->setWatermark($this->header['conlen']);
+				$this->setWatermark($this->header['conlen'], $this->header['conlen']);
 				return;
 			}
 
 			if ($this->header['padlen'] > 0) {
-				$this->setWatermark($this->header['padlen']);
+				$this->setWatermark($this->header['padlen'], $this->header['padlen']);
 			}
 
 			$this->state = self::STATE_PADDING;
 		}
 
 		if ($this->state === self::STATE_PADDING) {
-			$pad = $this->readFromBufExact($this->header['padlen']);
+			$pad = $this->readExact($this->header['padlen']);
 
 			if ($pad === false) {
 				return;
 			}
 		}
-		$this->setWatermark(8);
+		$this->setWatermark(8, 0xFFFFFF);
 		$this->state = self::STATE_ROOT;
 
 		
-		if (0) Daemon::log('[DEBUG] FastCGI-record ' . $this->header['ttype'] . '). Request ID: ' . $rid 
+		/*Daemon::log('[DEBUG] FastCGI-record ' . $this->header['ttype'] . '). Request ID: ' . $rid 
 				. '. Content length: ' . $this->header['conlen'] . ' (' . strlen($this->content) . ') Padding length: ' . $this->header['padlen'] 
-				. ' (' . strlen($pad) . ')');
+				. ' (' . strlen($pad) . ')');*/
 		
 
 		if ($type == self::FCGI_BEGIN_REQUEST) {
@@ -122,21 +128,20 @@ class FastCGIServerConnection extends Connection {
 			$u = unpack('nrole/Cflags', $this->content);
 
 			$req = new stdClass();
-			$req->attrs = new stdClass();
-			$req->attrs->request     = array();
-			$req->attrs->get         = array();
-			$req->attrs->post        = array();
-			$req->attrs->cookie      = array();
-			$req->attrs->server      = array();
-			$req->attrs->files       = array();
+			$req->attrs = new stdClass;
+			$req->attrs->request     = [];
+			$req->attrs->get         = [];
+			$req->attrs->post        = [];
+			$req->attrs->cookie      = [];
+			$req->attrs->server      = [];
+			$req->attrs->files       = [];
 			$req->attrs->session     = null;
 			$req->attrs->role       = self::$roles[$u['role']];
 			$req->attrs->flags       = $u['flags'];
 			$req->attrs->id          = $this->header['reqid'];
-			$req->attrs->params_done = false;
-			$req->attrs->stdin_done  = false;
-			$req->attrs->stdinbuf    = '';
-			$req->attrs->stdinlen    = 0;
+			$req->attrs->paramsDone = false;
+			$req->attrs->inputDone = false;
+			$req->attrs->input = new HTTPRequestInput;
 			$req->attrs->chunked     = false;
 			$req->attrs->noHttpVer   = true;
 			$req->queueId = $rid;
@@ -161,9 +166,9 @@ class FastCGIServerConnection extends Connection {
 				if (!isset($req->attrs->server['REQUEST_TIME_FLOAT'])) {
 					$req->attrs->server['REQUEST_TIME_FLOAT'] = microtime(true);	
 				}
-				$req->attrs->params_done = true;
+				$req->attrs->paramsDone = true;
 
-				$req = Daemon::$appResolver->getRequest($req, $this->pool);
+				$req = Daemon::$appResolver->getRequest($req, $this);
 				$req->conn = $this;
 
 				if ($req instanceof stdClass) {
@@ -215,16 +220,19 @@ class FastCGIServerConnection extends Connection {
 			}
 		}
 		elseif ($type === self::FCGI_STDIN) {
-			if ($this->content === '') {
-				$req->attrs->stdin_done = true;
+			if (!$req->attrs->input) {
+				goto start;
 			}
-
-			$req->stdin($this->content);
+			if ($this->content === '') {
+				$req->attrs->input->sendEOF();
+			} else {
+				$req->attrs->input->readFromString($this->content);
+			}
 		}
 
 		if (
-			$req->attrs->stdin_done 
-			&& $req->attrs->params_done
+			$req->attrs->inputDone 
+			&& $req->attrs->paramsDone
 		) {
 			if ($this->pool->variablesOrder === null) {
 				$req->attrs->request = $req->attrs->get + $req->attrs->post + $req->attrs->cookie;
@@ -253,78 +261,35 @@ class FastCGIServerConnection extends Connection {
 	 * Handles the output from downstream requests.
 	 * @param object Request.
 	 * @param string The output.
-	 * @return void
+	 * @return boolean Success
 	 */
-	public function requestOut($req, $output) {		
-		$outlen = strlen($output);
-		
-		/* 
-		* Iterate over every character in the string, 
-		* escaping with a slash or encoding to UTF-8 where necessary 
-		*/ 
-		// string bytes counter 
-		$d = 0; 
-		while($d < $outlen){ 
-		  
-		  $ord_var_c = ord($output{$d}); 
-		  
-		  switch (true) { 
-			  case (($ord_var_c >= 0x20) && ($ord_var_c <= 0x7F)): 
-				  // characters U-00000000 - U-0000007F (same as ASCII) 
-				  $d++; 
-				  break; 
-			  
-			  case (($ord_var_c & 0xE0) == 0xC0): 
-				  // characters U-00000080 - U-000007FF, mask 110XXXXX 
-				  // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8 
-				  $d+=2; 
-				  break; 
-
-			  case (($ord_var_c & 0xF0) == 0xE0): 
-				  // characters U-00000800 - U-0000FFFF, mask 1110XXXX 
-				  // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8 
-				  $d+=3; 
-				  break; 
-
-			  case (($ord_var_c & 0xF8) == 0xF0): 
-				  // characters U-00010000 - U-001FFFFF, mask 11110XXX 
-				  // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8 
-				  $d+=4; 
-				  break; 
-
-			  case (($ord_var_c & 0xFC) == 0xF8): 
-				  // characters U-00200000 - U-03FFFFFF, mask 111110XX 
-				  // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8 
-				  $d+=5; 
-				  break; 
-
-			  case (($ord_var_c & 0xFE) == 0xFC): 
-				  // characters U-04000000 - U-7FFFFFFF, mask 1111110X 
-				  // see http://www.cl.cam.ac.uk/~mgk25/unicode.html#utf-8 
-				  $d+=6; 
-				  break; 
-			  default: 
-				$d++;    
-		  } 
-		} 
-
-		for ($o = 0; $o < $d;) {
-			$c = min($this->pool->config->chunksize->value, $d - $o);
-			$w = $this->write(
-				  "\x01"												// protocol version
-				. "\x06"												// record type (STDOUT)
-				. pack('nn', $req->attrs->id, $c)					// id, content length
-				. "\x00" 												// padding length
-				. "\x00"												// reserved 
-				. ($c === $d ? $output : substr($output, $o, $c)) // content
-			);
-			if ($w === false) {
-				$req->abort();
-				return false;
+	public function requestOut($req, $out) {
+		$cs = $this->pool->config->chunksize->value;
+		if (strlen($out) > $cs) {
+			while (($ol = strlen($out)) > 0) {
+				$l = min($cs, $ol);
+				if ($this->sendChunk($req, binarySubstr($out, 0, $l)) === false) {
+					$req->abort();
+					return false;
+				}
+				$out = binarySubstr($out, $l);
 			}
-			$o += $c;
+		}
+		elseif ($this->sendChunk($req, $out) === false) {
+			$req->abort();
+			return false;
 		}
 		return true;
+	}
+
+	public function sendChunk($req, $chunk) {
+		return $this->write(
+				  "\x01"												// protocol version
+				. "\x06"												// record type (STDOUT)
+				. pack('nn', $req->attrs->id, strlen($chunk))			// id, content length
+				. "\x00" 												// padding length
+				. "\x00"												// reserved 
+		) && $this->write($chunk);										// content
 	}
 	public function freeRequest($req) {
 		unset($this->requests[$req->attrs->id]);

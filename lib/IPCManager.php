@@ -20,7 +20,7 @@ class IPCManager extends AppInstance {
 	protected function getConfigDefaults() {
 		return array(
 			// listen to
-			'mastersocket'     => 'unix:/tmp/phpDaemon-ipc-%x.sock',
+			'mastersocket'     => 'unix:///tmp/phpDaemon-ipc-%x.sock',
 		);
 	}
 
@@ -29,7 +29,7 @@ class IPCManager extends AppInstance {
 	 * @return void
 	 */
 	public function init() {
-		$this->socketurl = sprintf($this->config->mastersocket->value, crc32(Daemon::$config->pidfile->value));
+		$this->socketurl = sprintf($this->config->mastersocket->value, crc32(Daemon::$config->pidfile->value . "\x00" . Daemon::$config->user->value . "\x00" . Daemon::$config->group->value));
 		if (Daemon::$process instanceof Daemon_IPCThread) {
 			$this->pool = IPCManagerMasterPool::getInstance(array('listen' => $this->socketurl));
 			$this->pool->appInstance = $this;
@@ -40,7 +40,7 @@ class IPCManager extends AppInstance {
 
 	public function updatedWorkers() {
 		$perWorker = 1;
-		$instancesCount = array();
+		$instancesCount = [];
 		foreach (Daemon::$config as $name => $section)
 		{
 		 if (
@@ -83,7 +83,7 @@ class IPCManager extends AppInstance {
 	 * Called when application instance is going to shutdown.
 	 * @return boolean Ready to shutdown?
 	 */
-	public function onShutdown() {
+	public function onShutdown($graceful = false) {
 		if ($this->pool) {
 			return $this->pool->onShutdown();
 		}
@@ -103,7 +103,7 @@ class IPCManager extends AppInstance {
 	}
 
 	public function sendPacket($packet = null) {
-		if ($this->conn && $this->conn->connected) {
+		if ($this->conn && $this->conn->isConnected()) {
 			$this->conn->sendPacket($packet);
 			return;
 		}
@@ -113,7 +113,7 @@ class IPCManager extends AppInstance {
 		};
 		if (!$this->conn) {
 			$this->conn = new IPCManagerWorkerConnection(null, null, null);
-			$this->conn->connectTo($this->socketurl);
+			$this->conn->connect($this->socketurl);
 		}
 		$this->conn->onConnected($cb);
  	}
@@ -148,14 +148,18 @@ class IPCManagerMasterPool extends NetworkServer {
 	public $workers = array();
 }
 class IPCManagerMasterPoolConnection extends Connection {
-	public $timeout = null;
-	public $instancesCount = array();
-
-	public $workerId;
-	public function onPacket($p) {
+	public $instancesCount = [];
+	protected $timeout = null;
+	protected $lowMark  = 4;         // initial value of the minimal amout of bytes in buffer
+	protected $highMark = 0xFFFF;  	// initial value of the maximum amout of bytes in buffer
+	protected $workerId;
+	const STATE_CONTENT = 1;
+	protected $packetLength;
+	protected function onPacket($p) {
 		if (!is_array($p)) {
 			return;
 		}
+		//Daemon::log(Debug::dump($p));;
 		if ($p['op'] === 'start') {
 			$this->workerId = $p['workerId'];
 			$this->pool->workers[$this->workerId] = $this;
@@ -200,51 +204,51 @@ class IPCManagerMasterPoolConnection extends Connection {
 	}
 	
 	public function sendPacket($p) {
-		$data = serialize($p);
+		$data = igbinary_serialize($p);
 		$this->write(pack('N', strlen($data)) . $data);
 	}
 
 	/**
 	 * Called when new data received.
-	 * @param string New data.
 	 * @return void
 	 */
-	public function stdin($buf) {
-		$this->buf .= $buf;
-
+	public function onRead() {
 		start:
-
-		if (strlen($this->buf) < 4) {
-			return; // not ready yet
+		if ($this->state === self::STATE_ROOT) {
+			if (false === ($r = $this->readExact(4))) {
+				return; // not ready yet
+			}
+			$u = unpack('N', $r);
+			$this->packetLength = $u[1];
+			$this->state = self::STATE_CONTENT;
 		}
-
-		$u = unpack('N', $this->buf);
-		$size = $u[1];
-		
-		if (strlen($this->buf) < 4 + $size) {
-			return; // no ready yet;
+		if ($this->state === self::STATE_CONTENT) {
+			if (false === ($packet = $this->readExact($this->packetLength))) {
+				$this->setWatermark($this->packetLength);
+				return; // not ready yet
+			}
+			$this->setWatermark(4);
+			$this->state = self::STATE_ROOT;
+			$this->onPacket(igbinary_unserialize($packet));
 		}
-
-		$packet = binarySubstr($this->buf, 4, $size);
-
-		$this->buf = binarySubstr($this->buf, 4 + $size);
-
-		$this->onPacket(unserialize($packet));
-
 		goto start;
 	}
 }
 class IPCManagerWorkerConnection extends Connection {
-	public $timeout = null;
+	protected $timeout = null;
+	protected $lowMark  = 4;         // initial value of the minimal amout of bytes in buffer
+	protected $highMark = 0xFFFF;  	// initial value of the maximum amout of bytes in buffer
+	const STATE_CONTENT = 1;
+	protected $packetLength;
 	public function onReady() {
-		$this->sendPacket(array(
+		$this->sendPacket([
 			'op' => 'start',
-			'pid' => Daemon::$process->pid,
-			'workerId' => Daemon::$process->id)
-		);
+			'pid' => Daemon::$process->getPid(),
+			'workerId' => Daemon::$process->getId()
+		]);
 		parent::onReady();
 	}
-	public function onPacket($p) {
+	protected function onPacket($p) {
 		if ($p['op'] === 'spawnInstance') {
 			$fullname = $p['appfullname'];
 			$fullname = str_replace('-', ':', $fullname);
@@ -252,17 +256,15 @@ class IPCManagerWorkerConnection extends Connection {
 				$fullname .= ':';
 			}
 			list($app, $name) = explode(':', $fullname, 2);
-			Daemon::$appResolver->appInstantiate($app,$name);
+			Daemon::$appResolver->appInstantiate($app, $name, true);
 		}
 		elseif ($p['op'] === 'importFile') {
 			if (!Daemon::$config->autoreimport->value) {
-				Daemon::$process->sigusr2(); // graceful restart
+				Daemon::$process->gracefulRestart();
 				return;
 			}
 			$path = $p['path'];
-			Daemon_TimedEvent::add(function($event) use ($path) {
-				$self = Daemon::$process;
-				
+			TImer::add(function($event) use ($path) {				
 				if (Daemon::supported(Daemon::SUPPORT_RUNKIT_IMPORT)) {
 					//Daemon::log('--start runkit_import('.$path.')');
 					runkit_import($path, RUNKIT_IMPORT_FUNCTIONS | RUNKIT_IMPORT_CLASSES | RUNKIT_IMPORT_OVERRIDE);
@@ -289,35 +291,34 @@ class IPCManagerWorkerConnection extends Connection {
 		if ($p === null) {
 			return;
 		}
-		$data = serialize($p);
+		$data = igbinary_serialize($p);
 		$this->write(pack('N', strlen($data)) . $data);
 	}
 
+	
 	/**
 	 * Called when new data received.
-	 * @param string New data.
 	 * @return void
 	 */
-	public function stdin($buf) {
-		$this->buf .= $buf;
-
+	public function onRead() {
 		start:
-
-		if (strlen($this->buf) < 4) {
-			return; // not ready yet
+		if ($this->state === self::STATE_ROOT) {
+			if (false === ($r = $this->readExact(4))) {
+				return; // not ready yet
+			}
+			$u = unpack('N', $r);
+			$this->packetLength = $u[1];
+			$this->state = self::STATE_CONTENT;
 		}
-
-		$u = unpack('N', $this->buf);
-		$size = $u[1];
-		
-		if (strlen($this->buf) < 4 + $size) {
-			return; // no ready yet;
+		if ($this->state === self::STATE_CONTENT) {
+			if (false === ($packet = $this->readExact($this->packetLength))) {
+				$this->setWatermark($this->packetLength);
+				return; // not ready yet
+			}
+			$this->setWatermark(4);
+			$this->state = self::STATE_ROOT;
+			$this->onPacket(igbinary_unserialize($packet));
 		}
-
-		$packet = binarySubstr($this->buf, 4, $size);
-		$this->buf = binarySubstr($this->buf, 4 + $size);
-		$this->onPacket(unserialize($packet));
-
 		goto start;
 	}
 }

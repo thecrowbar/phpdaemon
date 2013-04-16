@@ -1,11 +1,12 @@
 <?php
 class XMLStream {
+	use EventHandlers;
+
 	protected $parser;
 	protected $xml_depth = 0;
 	protected $current_ns = array();
 	protected $idhandlers = array();
 	protected $xpathhandlers = array();
-	protected $eventHandlers = array();
 	protected $default_ns;
 
 	public function __construct() {
@@ -23,10 +24,10 @@ class XMLStream {
 
 	public function finish() {
 		$this->xml_depth = 0;
-		$this->current_ns = array();
-		$this->idhandlers = array();
-		$this->xpathhandlers = array();
-		$this->eventHandlers = array();	
+		$this->current_ns = [];
+		$this->idhandlers = [];
+		$this->xpathhandlers = [];
+		$this->eventHandlers = [];
 	}
 
 	public function __destroy() {
@@ -174,24 +175,6 @@ class XMLStream {
 		$this->idhandlers[$id] = $cb;
 	}
 
-	public function addEventHandler($event, $cb) {
-		if (!isset($this->eventHandlers[$event])) {
-			$this->eventHandlers[$event] = array();
-		}
-		$this->eventHandlers[$event][] = $cb;
-	}
-
-	public function event() {
-		$args = func_get_args();
-		$name = array_shift($args);
-		if (isset($this->eventHandlers[$name])) {
-			foreach ($this->eventHandlers[$name] as $cb) {
-				call_user_func($cb, $args);
-			}
-			
-		}
-	}
-
 	/**
 	 * Add XPath Handler
 	 *
@@ -331,11 +314,12 @@ class XMLStream_Object {
 	 * @param string $ns
 	 */
 	public function sub($name, $attrs = null, $ns = null) {
-		#TODO attrs is ignored
-		foreach($this->subs as $sub) {
-			if($sub->name == $name and ($ns == null or $sub->ns == $ns)) {
+		//@TODO: attrs is ignored
+		foreach ($this->subs as $sub) {
+			if ($sub->name == $name and ($ns == null or $sub->ns == $ns)) {
 				return $sub;
 			}
 		}
+		return null;
 	}
 }
