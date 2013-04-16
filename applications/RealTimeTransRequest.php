@@ -118,6 +118,8 @@ class RealTimeTransRequest extends HTTPRequest{
 	 */
 	public $trans_detail_div_only = false;
 	
+	public $help_file_html = 'RealTimeTrans.help.php';
+	
 	/**
 	 * Defined constant from VendorRequest. It tells the view what data to look for
 	 * @var Int
@@ -150,8 +152,9 @@ class RealTimeTransRequest extends HTTPRequest{
 		if ($this->error === 1) {
 			// something is wrong bail out now
 			Daemon::log('ERROR Missing data! err_msg:'.$this->err_msg);
-			echo json_encode(array('error'=>$this->error, 'err_msg'=>$this->err_msg));
+			//echo json_encode(array('error'=>$this->error, 'err_msg'=>$this->err_msg));
 			//require($this->html_file);
+			require($this->help_file_html);
 			return;
 		}
 		
@@ -240,17 +243,7 @@ class RealTimeTransRequest extends HTTPRequest{
 				break;
 			default:
 				Daemon::log('About to require():'.$this->html_file);
-				try{
-					$this->header('Access-Control-Allow: *');
-				}catch(Exception $e) {
-					Daemon::log('Exception caught trying to set header!');
-				}
-				//require($this->html_file);
-				echo "<pre>\$this->job:\n";
-				print_r($this->job);
-				echo "</pre>\n";
-				//echo json_encode(print_r($this->job, true));
-				//Daemon::log('$this->job:'.print_r($this->job, true));
+				require($this->help_file_html);
 				Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__);
 		}
 		Daemon::log(__METHOD__.' completed');
