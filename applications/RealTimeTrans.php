@@ -48,6 +48,21 @@ class RealTimeTrans extends Vendor{
 	 */
 	public $pending_trans_limit = '1000';
 	
+	/**
+	 * Array of timers that initiate on each sent transaction and clear when a
+	 * response is received. If no response is received then a reversal 
+	 * transaction must be sent
+	 * @var Timer[]
+	 */
+	public $auto_reversal_timers = array();
+	
+	/**
+	 * The number of seconds an auto-reverse timer should wait before sending
+	 * an automatic transaction reversal. Set to 0 to disable.
+	 * @var Int
+	 */
+	public $auto_reversal_timeout = 40;
+	
 	
 //	/**
 //	 * First method called when a new object is created.
@@ -121,6 +136,7 @@ class RealTimeTrans extends Vendor{
 							Daemon::log('Original trans id:'.$sr['id']);	
 						}
 						$msg->original_trans_id = $sr['id'];
+						$app->clearAutoReversalTimer($msg->original_trans_id);
 						$msg->original_trans_amount = $sr['trans_amount'];
 						if (self::$decrypt_data) {
 							$data = Vendor::decrypt_data($sr['pri_acct_no']);
@@ -226,6 +242,16 @@ class RealTimeTrans extends Vendor{
 		} else {
 			return new RealTimeTransRequest($this, $upstream, $req);
 		}
+	}
+	
+	/**
+	 * clearAutoReversalTimer() - clear an auto reversal timer 
+	 * @param Int $id - the DB record id of the timer to cancel
+	 */
+	public function clearAutoReversalTimer($id) {
+		//Daemon::log('We need to clear auto reversal timer for transID:'.$id);
+		Daemon::log('Atempting to clear auto reversal timer for transID:'.$id);
+		$this->auto_reversal_timers[$id]->cancel();
 	}
 	
 	// </editor-fold>

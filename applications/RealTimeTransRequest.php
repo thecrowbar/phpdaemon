@@ -333,7 +333,16 @@ class RealTimeTransRequest extends HTTPRequest{
 		$track2 = $req->req_params['track2'];
 		$cvc = $req->req_params['cvc'];
 		Daemon::log('$app is of type:'.get_class($app).' in '.__METHOD__);
-		$app->createISOandSend($app, $req, $id, $track2, $cvc);
+		$app->createISOandSend($app, $req, $id, $track2, $cvc, function() use($app, $req, $id){
+			if ($app->auto_reversal_timeout > 0) {
+				// add a timer to setup the auto_reversal transactions
+				Daemon::log('Adding an auto-reversal timer for transID:'.$id);
+				$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $req, $id){
+					//$req->createReversalTransJob($id);
+					Daemon::log('Auto reversal timer fired for transID:'.$id);
+				}, 1e6 * $app->auto_reversal_timeout);
+			}
+		});
 	}
 	
 	/**
