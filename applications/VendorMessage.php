@@ -14,18 +14,17 @@ class VendorMessage {
 	 */
 	public function __construct($trans_row) {
 		if (Vendor::$decrypt_data) {
-			Daemon::log('Attempting to decrypt our account number!');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to decrypt our account number!');
 			$result = Vendor::decrypt_data($trans_row['pri_acct_no']);
 			if (is_array($result)) {
-				//Daemon::log('$db_row used:'.print_r($db_row[0], true));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$db_row used:'.print_r($db_row[0], true));
 				// there was some sort of error
 				throw new Exception('Unable to decrypt account number! Error:'.$result['error_msg']);
 			} else {
-				Daemon::log('Decypted card number:'.print_r($result, true));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Decypted card number:'.print_r($result, true));
 				$trans_row['pri_acct_no'] = $result;
 			}
 		}
-		//Daemon::log('DB Data to create ISO8583:'.print_r($db_row[0], true));
 		// check if this a refund
 		if ($trans_row['processing_code'] === '200000') {
 			$this->ISO8583 = new ISO8583Trans($trans_row, ISO8583Trans::TRANS_TYPE_REFUND);

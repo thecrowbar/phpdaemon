@@ -14,7 +14,7 @@ class SQL {
 	 */
 	public static function buildQueryForRefund($trans_row) {
 		$ta = $trans_row;
-		//Daemon::log('$ta:'.print_r($ta, true));
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$ta:'.print_r($ta, true));
 		$query = "INSERT INTO fd_trans 
 			(terminal_id, trans_dt, 
 			user_name, sale_site_id, sx_order_number,
@@ -46,7 +46,7 @@ class SQL {
 				WHERE receipt_number = '{$msg->receipt_number}' 
 					AND ti.terminal_id = '{$msg->terminal_id}'";
 		
-		//Daemon::log('Query for original trans:'.$query);
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Query for original trans:'.$query);
 		return $query;
 	}
 	
@@ -99,7 +99,7 @@ class SQL {
 				break;
 			default:
 				// Unknown card type
-				Daemon::log('Unknown card type:'.$trans_row['cc_type'].', pri_acct_no:'.$trans_row['pri_acct_no']);
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unknown card type:'.$trans_row['cc_type'].', pri_acct_no:'.$trans_row['pri_acct_no']);
 		}
 		
 		// add a query for the reversal log table
@@ -270,7 +270,7 @@ class SQL {
 	 * @param Vendor $app - our Vendor object (extends appInstance)
 	 */
 	public static function buildQueryForTransUpdate($msg, $app) {
-		//daemon::log('$msg:'.print_r($msg, true));
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$msg:'.print_r($msg, true));
 		$queries = array();
 		// build the main table update query
 		// create our update query
@@ -374,7 +374,7 @@ class SQL {
 				}
 				break;
 			default:
-				Daemon::log('TODO Write query to update card type:'.$msg->card_type);
+				Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'TODO Write query to update card type:'.$msg->card_type);
 		}
 		//</editor-fold>
 		
@@ -435,17 +435,17 @@ class SQL {
 		if ($msg->dataExistsForBit(44)) {
 			$avs_resp = $msg->getDataForBit(44, true);
 			$md5_hash = md5($msg->encrypted_acct_no);
-			//Daemon::log("Using {$msg->encrypted_acct_no} to create md5 hash: {$md5_hash}");
-			//Daemon::log('$msg:'.print_r($msg, true));
+			//Vendor::log(Vendor::LOG_LEVEL_DEBUG, "Using {$msg->encrypted_acct_no} to create md5 hash: {$md5_hash}");
+			//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$msg:'.print_r($msg, true));
 			$query = "INSERT INTO avs_response_log (acct_number_hash, avs_date, avs_response)
 				VALUES('{$md5_hash}', CURDATE(), '{$avs_resp}')";
 			$queries[] = $query;
 		} else {
-			Daemon::log('No data exists for bit 44. Not creating AVS response log query');
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'No data exists for bit 44. Not creating AVS response log query');
 		}
 		//</editor-fold>
 		
-		//Daemon::log('Trans update queries:'.print_r($queries, true));
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Trans update queries:'.print_r($queries, true));
 		return $queries;
 	}
 	

@@ -128,8 +128,8 @@ class RealTimeTransRequest extends HTTPRequest{
 	
 //	public function __construct($url = null, $request_method = null, $options = nullarray) {
 //		if (is_object($url)) {
-//			Daemon::log('We got passed an object as our $url!');
-//			Daemon::log('$url is of type:'.Vendor::get_type($url));
+//			Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'We got passed an object as our $url!');
+//			Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$url is of type:'.Vendor::get_type($url));
 //			$this->app = $url;
 //		}
 //		parent::__construct($url, $request_method, $options);
@@ -151,7 +151,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		$this->valuesPresentInRequest();
 		if ($this->error === 1) {
 			// something is wrong bail out now
-			Daemon::log('ERROR Missing data! err_msg:'.$this->err_msg);
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Missing data! err_msg:'.$this->err_msg);
 			//echo json_encode(array('error'=>$this->error, 'err_msg'=>$this->err_msg));
 			//require($this->html_file);
 			require($this->help_file_html);
@@ -183,9 +183,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		// run our job
 		$job();
 		$sleep_time = 5;
-		if (Vendor::$debug) {
-			Daemon::log(__METHOD__.'->transID:'.$this->transID.' being put to sleep for '.$sleep_time.' seconds');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'->transID:'.$this->transID.' being put to sleep for '.$sleep_time.' seconds');
 
 		// sleep for $sleep_time seconds to give the query time to execute
 		// if the sleep() method is called outside of the run() method then the
@@ -197,7 +195,7 @@ class RealTimeTransRequest extends HTTPRequest{
 	 * 
 	 */
 	public function run() {
-		Daemon::log('RealTimeTransRequest->run() executing');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'RealTimeTransRequest->run() executing');
 		$req = $this;
 		
 		// we need 1, 2, or 3 bits of information to process
@@ -208,12 +206,12 @@ class RealTimeTransRequest extends HTTPRequest{
 		// check our job result
 		if (!is_object($this->job)) {
 			// our job is not an object something went wrong
-			Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.'$this->job is not an object');
+			Vendor::logger(Vendor::LOG_LEVEL_WARNING, __FILE__.':'.__METHOD__.':'.__LINE__.'$this->job is not an object');
 			echo json_encode(array('error'=>1, 'err_msg'=>'$this->job is not an object!', '$this->job'=>$this->job));
 			return;
 		}
 		
-		Daemon::log(__METHOD__.' $this->cmd:"'.$this->cmd.'"');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $this->cmd:"'.$this->cmd.'"');
 		switch($this->cmd){
 			case 'view_all_trans':
 				require($this->trans_view_html);
@@ -228,7 +226,7 @@ class RealTimeTransRequest extends HTTPRequest{
 						$transObj = new RealTimeTransaction($detail_row[0]);
 						echo $transObj->outputHtmlView();
 					}catch(Exception $e){
-						Daemon::log(__METHOD__.' EXCEPTION caught! $e:'.$e);
+						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, __METHOD__.' EXCEPTION caught! $e:'.$e);
 					}
 				} else {
 					require($this->trans_detail_html);
@@ -242,11 +240,11 @@ class RealTimeTransRequest extends HTTPRequest{
 				$this->createJSONISO8583Response($req->job->getResult('trans_msg'));
 				break;
 			default:
-				Daemon::log('About to require():'.$this->html_file);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to require():'.$this->html_file);
 				require($this->help_file_html);
-				Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__);
 		}
-		Daemon::log(__METHOD__.' completed');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' completed');
 	}
 	
 	/**
@@ -255,7 +253,7 @@ class RealTimeTransRequest extends HTTPRequest{
 	 * @param ISO8583Trans $iso - the ISO8583 Transaction object to work with
 	 */
 	private function createJSONISO8583Response($iso) {
-		Daemon::log('Creating JSON Response from iso:'.get_class($iso));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating JSON Response from iso:'.get_class($iso));
 		//if (is_object($iso) && )
 		$resp = new stdClass();
 		$resp->response_code = $iso->getDataForBit(39);
@@ -316,7 +314,7 @@ class RealTimeTransRequest extends HTTPRequest{
 				$this->$val = $req[$val];
 			}
 		}
-		Daemon::log(__METHOD__.' $this->transID:'.$this->transID);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $this->transID:'.$this->transID);
 
 	}
 	
@@ -327,19 +325,19 @@ class RealTimeTransRequest extends HTTPRequest{
 	 * @return null
 	 */
 	private function createTransRowJob($id){
-		Daemon::log(__METHOD__.' called with argument:'.$id);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called with argument:'.$id);
 		$app = $this->appInstance;
 		$req = $this;
 		$track2 = $req->req_params['track2'];
 		$cvc = $req->req_params['cvc'];
-		Daemon::log('$app is of type:'.get_class($app).' in '.__METHOD__);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$app is of type:'.get_class($app).' in '.__METHOD__);
 		$app->createISOandSend($app, $req, $id, $track2, $cvc, function() use($app, $req, $id){
 			if ($app->auto_reversal_timeout > 0) {
 				// add a timer to setup the auto_reversal transactions
-				Daemon::log('Adding an auto-reversal timer for transID:'.$id);
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding an auto-reversal timer for transID:'.$id);
 				$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $req, $id){
 					//$req->createReversalTransJob($id);
-					Daemon::log('Auto reversal timer fired for transID:'.$id);
+					Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Auto reversal timer fired for transID:'.$id);
 				}, 1e6 * $app->auto_reversal_timeout);
 			}
 		});
@@ -380,13 +378,13 @@ class RealTimeTransRequest extends HTTPRequest{
 		$req = $this;
 		$q = SQL::singleTransDetailQuery($id);
 		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req){
-			Daemon::log('We are inside the createReversalTransJob() job callback!');
-			//Daemon::log('Need to build a reversal DB record from data:'.print_r($result, true));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
 			$q = SQL::buildQueryForReversal($result[0]);
 			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
-				Daemon::log('Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
 				$queries = SQL::buildQueriesForReversal($orig_tr, $result, $app);
 
 				// execute our queries
@@ -412,11 +410,11 @@ class RealTimeTransRequest extends HTTPRequest{
 		$q = SQL::refundOriginalTransQuery($id);
 		$app->createJobFromQuery($app, $req, 'refund_trans', $q, false, 
 				function($result) use($app, $req){
-			Daemon::log('Inside the refund_trans job callback $result:'.print_r($result, true));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the refund_trans job callback $result:'.print_r($result, true));
 			$q = SQL::buildQueryForRefund($result[0]);
 			$app->createJobFromQuery($app, $req, 'process_refund', $q, false,
 					function($result) use($app, $req){
-				Daemon::log('Inside the process_refund job callback! $result:'.$result);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the process_refund job callback! $result:'.$result);
 				// create and send a new ISO8583 message from our query
 				$app->createISOandSend($app, $req, $result);
 			});

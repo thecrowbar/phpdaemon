@@ -84,9 +84,7 @@ class RealTimeTrans extends Vendor{
 		// this closure handles the incoming data
 		// VendorClientConnection has done basic sanity checks to ensure 
 		// a complete message has made it through
-		if (Vendor::$debug) {
-			Daemon::log('data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'data_recvd handler fired! Processing '.strlen($msg).' bytes of data.');
 
 		// $msg is a string of bytes from TCP socket convert it into an object
 		try {
@@ -94,47 +92,40 @@ class RealTimeTrans extends Vendor{
 			$iso_msg->addTCPMessage($msg);
 			$msg = $iso_msg;
 		} catch(Exception $e){
-			Daemon::log('Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
+			Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Exeception caught trying to recreate ISO8583 from TCP data! Exception:'.$e);
 			return;
 		}
 		if ($msg->msg_type === ISO8583::MSG_TYPE_AUTH_RESP 
 				|| $msg->msg_type === ISO8583::MSG_TYPE_REV_RESP) {
 			// this is a repsone to one of our messages, we need some information from the database
-			if (Vendor::$debug) {
-				Daemon::log('Processing an AUTH_RESP or REV_RESP message');
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Processing an AUTH_RESP or REV_RESP message');
 			
 			// get a MySQl connection to update the record in the DB
 			$sql_conn = $app->sql->getConnection(function($sql) use ($conn, $app, $msg){
-				Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
 
 				$query = SQL::buildQueryForOriginalTrans($msg, $app);
-				if (Vendor::$debug) {
-					//Daemon::log('About to execute query:'.$query);
-				}
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to execute query:'.$query);
 				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
-					Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
 					// check for a successful sql query
 					if ($success === false) {
-						Daemon::log('Failed to run query:'.$query.' SQL Error:'.$sql->errmsg);
+						Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Failed to run query:'.$query.' SQL Error:'.$sql->errmsg);
 						return;
 					}else{
-						Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' executing');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing');
 					}
 					// get the data we need from our Database
 					$sql_results = $sql->resultRows;
 					
 					if (count($sql_results) !== 1) {
-						//Daemon::log('Incorrect number of results found for query:'.$query);
-						Daemon::log('Incorrect number of results found for query:'.$query);
+						Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Incorrect number of results found for query:'.$query);
 					}
 					$sr = $sql_results[0];
 					
 					// add data from the original trans into our new object
 					try{
-						if (self::$debug) {
-							Daemon::log('Original trans id:'.$sr['id']);	
-						}
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
 						$msg->original_trans_id = $sr['id'];
 						$app->clearAutoReversalTimer($msg->original_trans_id);
 						$msg->original_trans_amount = $sr['trans_amount'];
@@ -163,15 +154,13 @@ class RealTimeTrans extends Vendor{
 									$msg->card_type = 'Discover';
 									break;
 								default:
-									Daemon::log("User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
+									Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
 							}
 						}
 						
-						if (self::$debug) {
-							Daemon::log('Finished adding data from original trans!');
-						}
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
 					}catch(Exception $e){
-						Daemon::log('Exception caught trying to update transaction with original trans data! Exception:'. $e);
+						Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
 					}
 
 					// at this point we have a complete transaction response
@@ -180,10 +169,10 @@ class RealTimeTrans extends Vendor{
 						// wake the original job up
 						$transID = $msg->original_trans_id;
 						if (array_key_exists($transID, $app->pending_requests) && is_object($app->pending_requests[$transID])) {
-							Daemon::log('Found our request object for transID:'.$transID);
+							Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Found our request object for transID:'.$transID);
 							$req = $app->pending_requests[$transID];
 							$this->pending_req_timer = setTimeout(function($timer) use($req, $msg) {
-								//Daemon::log(__FILE__.':'.__METHOD__.':'.__LINE__.' timer callback firing');
+								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' timer callback firing');
 								//$app->checkOutboundQueue($app);
 								$req->job->setResult('trans_msg', $msg);
 								$req->wakeup();
@@ -191,10 +180,10 @@ class RealTimeTrans extends Vendor{
 							//setTimeout(function() use ($req){$req->wakeup()}, 300);
 							//$req->wakeup();
 						} else {
-							Daemon::log('No pending request found for transID:'.$transID);
+							Vendor::logger(Vendor::LOG_LEVEL_INFO, 'No pending request found for transID:'.$transID);
 						}
 						//$this->pending_requests[$transID]->wakeup();
-						//Daemon::log(print_r($this->pending_requests, true));
+						//Vendor::log(Vendor::LOG_LEVEL_DEBUG, print_r($this->pending_requests, true));
 
 					});
 					
@@ -203,17 +192,14 @@ class RealTimeTrans extends Vendor{
 					if (is_object($app->ws)) {
 						$app->updateClientWS($app->ws, $msg);
 					} else {
-						if (self::$debug){
-							//Daemon::log(Debug::dump($app));
-						}
-						//Daemon::log('$app->ws is not an object! Unable to send response over websocket!');
+						Vendor::logger(Vendor::LOG_LEVEL_INFO, '$app->ws is not an object! Unable to send response over websocket!');
 					}
 
 
 					// output some basic debugging data to log file
-					Daemon::log($msg->getBasicDebugData());
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, $msg->getBasicDebugData());
 					if (method_exists($msg, 'getBit63DebugData')){
-						Daemon::log($msg->getBit63DebugData());
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, $msg->getBit63DebugData());
 					}
 				});
 
@@ -228,16 +214,16 @@ class RealTimeTrans extends Vendor{
 	 * @return RealTimeTransRequest Request.
 	 */
 	public function beginRequest($req, $upstream) {
-		Daemon::log(__METHOD__.' running');
-		//Daemon::log('$req:'.print_r($req, true));
-		//Daemon::log('About to attempt parsing of $req->attrs:'.print_r($req->attrs, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running');
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$req:'.print_r($req, true));
+		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'About to attempt parsing of $req->attrs:'.print_r($req->attrs, true));
 		$req_params = RealTimeTransRequest::importRequestValues($req->attrs);
-		Daemon::log('$req_params:'.print_r($req_params, true));
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, '$req_params:'.print_r($req_params, true));
 		if (array_key_exists('transID', $req_params)) {
 			$transID = $req_params['transID'];
 			
 			$this->pending_requests[$transID] = new RealTimeTransRequest($this, $upstream, $req);
-			//Daemon::log('pending_requests() now contains:'.count($this->pending_requests).' objects');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'pending_requests() now contains:'.count($this->pending_requests).' objects');
 			return $this->pending_requests[$transID];			
 		} else {
 			return new RealTimeTransRequest($this, $upstream, $req);
@@ -249,8 +235,7 @@ class RealTimeTrans extends Vendor{
 	 * @param Int $id - the DB record id of the timer to cancel
 	 */
 	public function clearAutoReversalTimer($id) {
-		//Daemon::log('We need to clear auto reversal timer for transID:'.$id);
-		Daemon::log('Atempting to clear auto reversal timer for transID:'.$id);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We need to clear auto reversal timer for transID:'.$id);
 		$this->auto_reversal_timers[$id]->cancel();
 	}
 	

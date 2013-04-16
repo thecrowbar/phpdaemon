@@ -19,17 +19,13 @@ class VendorWebSocketRoute extends WebSocketRoute {
 	 * @return void
 	 */
 	public function onFrame($data, $type) {
-		if ($this->appInstance->$debug) {
-			Daemon::log('data:'.$data.' received from websocket client');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'data:'.$data.' received from websocket client');
 		
 		// attmept to JSON decode the frame. Try to recover the object
 		$client_data = json_decode($data);
 		if (is_object($client_data)) {
 			// we have a good decode
-			if ($this->appInstance->$debug) {
-				Daemon::log('Decoded a JSON object! Object:'.print_r($client_data, true));
-			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Decoded a JSON object! Object:'.print_r($client_data, true));
 			// act on our object
 			if ($client_data->command === 'send_trans') {
 				// save this closure in the appInstance so it can return transaction
@@ -42,9 +38,7 @@ class VendorWebSocketRoute extends WebSocketRoute {
 			}
 		} else {
 			$this->client->sendFrame('Error '.json_last_error().', trying to decode data', 'STRING');
-			if ($this->appInstance->$debug) {
-				Daemon::log('Received object:'.print_r($client_data, true));
-			}		
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Received object:'.print_r($client_data, true));
 		}
 	}
 }

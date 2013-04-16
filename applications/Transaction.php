@@ -90,10 +90,10 @@ class Transaction {
 	
 	public function outputHtmlView(){
 		$html = '';
-		//Daemon::log('$this->db_row:'.print_r($this->db_row, true));
-		//Daemon::log('$this:'.print_r($this, true));
-		//Daemon::log('using $elems:'.print_r($this->elems, true));
-		//Daemon::log('$this is an object of:'.get_class());
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->db_row:'.print_r($this->db_row, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this:'.print_r($this, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'using $elems:'.print_r($this->elems, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this is an object of:'.get_class());
 		foreach($this->elems as $row_num=>$vals) {
 			// first check if we have a hidden input element; this is determined by
 			// a null $vals[0]

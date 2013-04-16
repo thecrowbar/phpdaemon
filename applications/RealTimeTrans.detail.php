@@ -107,7 +107,7 @@
 		
 		// display our transaction detail
 		$detail_row = $trans[0];
-		//Daemon::log('$trans:'.print_r($detail_row, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$trans:'.print_r($detail_row, true));
 		
 		$transObj = new RealTimeTransaction($detail_row);
 		echo "<div id='transaction_detail'>\n";

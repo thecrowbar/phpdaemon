@@ -64,7 +64,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		// create a timer to fire keep alive messages, default timeout = 90 secs
 		$conn = $this;
 		$this->keepaliveTimer = setTimeout(function($timer) use($conn) {
-			Daemon::log(__METHOD__.' timer callback firing! About to send keep-alive ISO8583 message');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing! About to send keep-alive ISO8583 message');
 			$conn->ping();
 		}, 1e6 * 90);
 		
@@ -77,9 +77,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @param Closure $cb - callback to execute when the client connects
 	 */
 	public function onConnected($cb){
-		if (Vendor::$debug) {
-			Daemon::log(__METHOD__.' called. Connected to host:'.$this->host);
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called. Connected to host:'.$this->host);
 		
 		// timeout only called in the onReady and stdin methods
 		// start the keep-alive timer 
@@ -115,7 +113,7 @@ class VendorClientConnection extends NetworkClientConnection {
 				//fwrite($file, "\n\n\n");
 				fclose($file);
 			}
-			//Daemon::log('Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
 		}
 
 		// apend new data to our input buffer
@@ -138,9 +136,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		if (($pkt_start = strpos($this->buf, $this->pkt_start_bytes)) === false) {
 			return;
 		}
-		if (Vendor::$debug) {
-			//Daemon::log('Found packet start at offset: ' . $pkt_start);
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Found packet start at offset: ' . $pkt_start);
 		// good we found a packet, get our size
 		list (, $payload_size) = unpack('n', binarySubstr($this->buf, $pkt_start + $startsize, $this->pkt_size_bytes));
 		
@@ -152,7 +148,7 @@ class VendorClientConnection extends NetworkClientConnection {
 			return;
 		}
 		if (binarySubstr($this->buf, $pkt_start + $startsize + $this->pkt_size_bytes + $payload_size, $endsize) !== $this->pkt_end_bytes) {
-			Daemon::log('Wrong End Bytes.');
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Wrong End Bytes.');
 			$this->finish();
 			return;
 		}
@@ -178,7 +174,7 @@ class VendorClientConnection extends NetworkClientConnection {
 				call_user_func_array($cb, $args);
 			}
 		} else {
-			Daemon::log('No handler defined for event:'.$name);
+			Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'No handler defined for event:'.$name);
 		}
 	}
 	
@@ -189,7 +185,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public function addEventHandler($event, $cb) {
 		if (is_callable($cb) && Vendor::$debug){
-			Daemon::log('Adding a callback for event: '.$event);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding a callback for event: '.$event);
 		}
 		if (!isset($this->eventHandlers[$event])) {
 			$this->eventHandlers[$event] = array();
@@ -198,9 +194,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		if (!in_array($cb, $this->eventHandlers[$event])) {
 			$this->eventHandlers[$event][] = $cb;
 		}
-		if (Vendor::$debug) {
-			Daemon::log('There are now '.count($this->eventHandlers[$event]).' handlers defined for event: '.$event);
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'There are now '.count($this->eventHandlers[$event]).' handlers defined for event: '.$event);
 	}
 	
 	/**
@@ -224,7 +218,7 @@ class VendorClientConnection extends NetworkClientConnection {
 					fwrite($file, "\n\n\n");
 					fclose($file);
 				}
-				//Daemon::log('Wrote '.strlen($data).' bytes of data.');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Wrote '.strlen($data).' bytes of data.');
 			}
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);
@@ -234,11 +228,11 @@ class VendorClientConnection extends NetworkClientConnection {
 				$this->event('data_sent', strlen($data));
 			} else {
 				// our transaction failed...
-				Daemon::log('Failed to send data using host '.$this->hostReal.':'.$this->port);
+				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to send data using host '.$this->hostReal.':'.$this->port);
 				$this->connected = false;
 			}
 		}catch(Exception $ex) {
-			Daemon::log('Exception caught while trying to send data! Exception:'.$ex);
+			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Exception caught while trying to send data! Exception:'.$ex);
 		}
 		
 	}

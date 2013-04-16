@@ -44,8 +44,8 @@ class VendorRequest extends HTTPRequest{
 	
 	public function __construct($url = null, $request_method = null, $options = nullarray) {
 		if (is_object($url)) {
-			Daemon::log('We got passed an object as our $url!');
-			Daemon::log('$url is of type:'.Vendor::get_type($url));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We got passed an object as our $url!');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$url is of type:'.Vendor::get_type($url));
 			$this->app = $url;
 		}
 		parent::__construct($url, $request_method, $options);
@@ -64,23 +64,20 @@ class VendorRequest extends HTTPRequest{
 		
 		// determine what we should do
 		if (isset($options)) {
-			Daemon::log('$options is set and is type:'.Vendor::get_type($options));
-			Daemon::log('$options:'.print_r($options, true));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$options is set and is type:'.Vendor::get_type($options));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$options:'.print_r($options, true));
 		}
 		
-		Daemon::log('$this->app is of type:'.Vendor::get_type($this->app));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->app is of type:'.Vendor::get_type($this->app));
 		$options = array();
 		// our request has not yet been processed. We must decode the wuery string ourselves
 		if (strlen($this->attrs->server['QUERY_STRING']) > 0) {
 			// we have a query to decode
-			Daemon::log('Attempting to decode:'.$this->attrs->server['QUERY_STRING']);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to decode:'.$this->attrs->server['QUERY_STRING']);
 			parse_str($this->attrs->server['QUERY_STRING'], $options);
 		}
 		
-		if (Daemon::$debug) {
-			Daemon::log(__METHOD__.' running');
-			//Daemon::log('$req:'.print_r($req, true));
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running');
 		
 		// create a job to query the database for pending transactions 
 		$job = $this->job = new ComplexJob(function() use ($req){
@@ -125,7 +122,7 @@ class VendorRequest extends HTTPRequest{
 				}
 			}
 		} else {
-			Daemon::log('NOT SUBMITTING DRAFT! $options:'.print_r($options, true));
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'NOT SUBMITTING DRAFT! $options:'.print_r($options, true));
 		}
 		
 		if (strlen($this->err_msg) < 1) {
@@ -138,18 +135,14 @@ class VendorRequest extends HTTPRequest{
 						// the callback receives the MySQLClientConnection object and a
 						// boolean success flag
 						if (!$success) {
-							if (Daemon::$debug){
-								Daemon::log('getConnection failed in ');
-							}
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in ');
 							return $job->setResult($name, 'Error connecting to MySQL Server');
 						}
 						$query = Vendor::buildSubmitDraftSQL($req->draft_date);
-						Daemon::log('Query to get draft transactions:'.$query);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Query to get draft transactions:'.$query);
 						$sql->query($query, function($sql, $success) use ($job, $name, $query) {
 							if (!$success) {
-								if (Daemon::$debug){
-									Daemon::log('$sql->query() failed with error:'.$sql->errmsg);
-								}
+								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$sql->query() failed with error:'.$sql->errmsg);
 								return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
 							}
 
@@ -170,18 +163,14 @@ class VendorRequest extends HTTPRequest{
 						// the callback receives the MySQLClientConnection object and a
 						// boolean success flag
 						if (!$success) {
-							if (Daemon::$debug){
-								Daemon::log('getConnection failed in ');
-							}
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in ');
 							return $job->setResult($name, 'Error connecting to MySQL Server');
 						}
 
 						$query = $req->appInstance->config->pending_batch_query->value;
 						$sql->query($query, function($sql, $success) use ($job, $name, $query) {
 							if (!$success) {
-								if (Daemon::$debug){
-									Daemon::log('$sql->query() failed with error:'.$sql->errmsg);
-								}
+								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$sql->query() failed with error:'.$sql->errmsg);
 								return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
 							}
 
@@ -201,9 +190,7 @@ class VendorRequest extends HTTPRequest{
 		$job();
 		
 		$sleep_time = 2;
-		if (Daemon::$debug) {
-			Daemon::log(__METHOD__.' being put to sleep for '.$sleep_time.' seconds');
-		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' being put to sleep for '.$sleep_time.' seconds');
 		
 		// sleep for 5 seconds to give the query time to execute
 		// if the sleep() method is called outside of the run() method then the

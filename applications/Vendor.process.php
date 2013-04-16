@@ -39,11 +39,11 @@
 			// save our batch ids so we can set them as transmitted
 			$batch_ids = array();
 			echo "<h3>Found ".count($trans)." transactions to process.</h3>";
-			Daemon::log('$this->app is of type:'.Vendor::get_type($this->app));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->app is of type:'.Vendor::get_type($this->app));
 			if (method_exists($this->app, 'createMessage')) {
-				Daemon::log('$this->app has method createMessage!');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->app has method createMessage!');
 				foreach($trans as $t) {
-					//Daemon::log('$t:'.print_r($t, true));
+					//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$t:'.print_r($t, true));
 					// submit each transaction
 					$this->app->createMessage($t['id'], null);
 					
@@ -56,7 +56,7 @@
 				$this->app->setBatchAsTransmitted($batch_ids);
 				
 			} else {
-				Daemon::log('$this->app lacks method createMessage!!!!!!!!');
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, '$this->app lacks method createMessage!!!!!!!!');
 			}
 			
 		}else{

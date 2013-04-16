@@ -587,9 +587,9 @@ class ISO8583 {
 		for($i = 0, $stop = count($bs); $i < $stop; $i+=2) {
 			$return .= pack('C', bindec($bs[$i].$bs[$i+1]));
 		}
-//		Daemon::log('$bs[]:'.print_r($bs, true));
-//		Daemon::log('$da[]:'.print_r($da, true));
-//		Daemon::log("Creating BCD prefix for data of length:".strlen($return));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$bs[]:'.print_r($bs, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$da[]:'.print_r($da, true));
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, "Creating BCD prefix for data of length:".strlen($return));
 		$prefix = $this->_calculateBCDPrefix($this->DATA_ELEMENT[35], $d);
 		return $prefix.$return;
 	}
