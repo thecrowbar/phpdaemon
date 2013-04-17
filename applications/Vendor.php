@@ -48,7 +48,7 @@ class Vendor extends AppInstance{
 	 * Log Messages at or below this level will be sent to the phpd log
 	 * @var Int
 	 */
-	public static $log_level = self::LOG_LEVEL_INFO;
+	public static $log_level = self::LOG_LEVEL_DEBUG;
 	
 	public static $log_tcp_stream = true;
 	
@@ -207,7 +207,7 @@ class Vendor extends AppInstance{
 				)
 		);
 		$this->sql = MySQLClient::getInstance($mysql_config);
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->sql:'.print_r($this->sql, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->sql:'.print_r($this->sql, true));
 		
 		// create a connection to the MySQL server for use later
 		$this->sql_conn = $this->sql->getConnection();
@@ -247,13 +247,13 @@ class Vendor extends AppInstance{
 			return new VendorWebSocketRoute($client, $appInstance);
 		});
 		
-		// start a timer to check the outbound queue every 90 seconds
-		$app = $this;
-		$this->keepaliveTimer = setTimeout(function($timer) use($app) {
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing');
-			$app->checkOutboundQueue($app);
-		}, 1e6 * 90);
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
+//		// start a timer to check the outbound queue every 90 seconds
+//		$app = $this;
+//		$this->keepaliveTimer = setTimeout(function($timer) use($app) {
+//			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing');
+//			$app->checkOutboundQueue($app);
+//		}, 1e6 * 900);
+//		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
 	}
 	
 	/**
@@ -451,7 +451,7 @@ class Vendor extends AppInstance{
 								// send our iso
 								// add the message to our queue
 								$app->tq->enqueue($app->vendorMessage);
-								Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'NOTICE! Not Adding message to outbound queue');
+								//Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'NOTICE! Not Adding message to outbound queue');
 
 								// send the data to the remote vendor
 								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call Vendor->connect and pass in callback to checkOutboundQueue');
@@ -771,7 +771,7 @@ class Vendor extends AppInstance{
 
 					// call any callback and pass it the $result from this job
 					if(is_callable($cb)) {
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call_user_func() and pass $result:'.print_r($result, true));
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call_user_func() and pass $result'); //:'.print_r($result, true));
 						call_user_func($cb, $result);
 					}
 					
