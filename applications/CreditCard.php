@@ -107,7 +107,7 @@ class CreditCard {
 				Case 2131:Case 1800:
 					$CreditCardType = "JCB";
 					break;
-				Case 6011:
+				Case 6011: case 6012: // 6012 == China Union Pay
 					$CreditCardType = "Discover";
 					break;
 
@@ -125,7 +125,8 @@ class CreditCard {
 		if ($CreditCardType == "UNKNOWN") {
 			if (substr($CardNo,0,2) == 65 && strlen($CardNo) == 16) {
 				$CreditCardType = "Discover";
-			} else if(substr($CardNo,0,2) == 62 && strlen($CardNo) == 16) {
+			} else if((substr($CardNo,0,2) == 62 || substr($cardNo,0,2) == 60) 
+					&& strlen($CardNo) == 16) {
 				// China Union Pay; processes as Discover
 				$CreditCardType = 'Discover';
 			}
