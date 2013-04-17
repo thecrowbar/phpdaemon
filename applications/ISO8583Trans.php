@@ -13,10 +13,11 @@ class ISO8583Trans extends ISO8583{
 	
 	// these are message types
 	const TRANS_TYPE_RECURRING_BILLING		= 1;
-	const TRANS_TYPE_REALTIME				= 2;
+	const TRANS_TYPE_RETAIL					= 2;
 	const TRANS_TYPE_REFUND					= 3;
 	const TRANS_TYPE_DIRECT_MARKETING		= 4;
 	const TRANS_TYPE_REVERSAL				= 5;
+	const TRANS_TYPE_TIMEOUT_REVERSAL		= 6;
 	
 	// these are messages classes Auth, Auth&Cap, Cap only
 	const MSG_CLASS_AUTH_N_CAP				= 1;
@@ -123,7 +124,7 @@ class ISO8583Trans extends ISO8583{
 		if ($db_result === null) {
 			// we were called without any options just create an empty object
 		}else if (is_array($db_result)) {
-			Daemon::log('Creating ISO8583Trans object with data:'.print_r($db_result, true));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating ISO8583Trans object with data:'.print_r($db_result, true));
 			// FIXME this needs to be changed for real-time auth
 			$this->_trans_type = $trans_type;
 			$this->_trans_row = $db_result;
@@ -135,7 +136,7 @@ class ISO8583Trans extends ISO8583{
 
 			$this->_trans_id = $this->_trans_row['id'];
 			if (!array_key_exists('id', $this->_trans_row)) {
-				Daemon::log('$this->_trans_row:'.print_r($this->_trans_row, true));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->_trans_row:'.print_r($this->_trans_row, true));
 			}
 			if ($this->_original_trans_id === -1 && array_key_exists('original_trans_id',$this->_trans_row)) {
 				$this->_original_trans_id = $this->_trans_row['original_trans_id'];
@@ -149,7 +150,7 @@ class ISO8583Trans extends ISO8583{
 			try{
 				$this->credit_card = new CreditCard($this->_pri_acct_no);
 			}catch(Exception $e) {
-				Daemon::log('Caught exception with card number! $this->_pri_acct_no:'.$this->_pri_acct_no.', $this->pri_acct_no:'.$this->pri_acct_no.', $this->encrypted_acct_no:'.$this->encrypted_acct_no);
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Caught exception with card number! $this->_pri_acct_no:'.$this->_pri_acct_no.', $this->pri_acct_no:'.$this->pri_acct_no.', $this->encrypted_acct_no:'.$this->encrypted_acct_no);
 			}
 			// save our AVS response and/or date
 			if (array_key_exists('last_avs_date', $this->_trans_row)) {
@@ -217,7 +218,7 @@ class ISO8583Trans extends ISO8583{
 		}
 		
 		// Bit 35 is the track2 data. It is only used for real-time transactions with swipe
-		if ($this->_trans_type === self::TRANS_TYPE_REALTIME &&
+		if ($this->_trans_type === self::TRANS_TYPE_RETAIL &&
 				array_key_exists('track2', $this->_trans_row) &&
 				strlen($this->_trans_row['track2']) > 0) {
 			// track2 start sentinel (;), end sentinel (?) and LRC should be excluded
@@ -253,7 +254,7 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(44, $this->_trans_row['avs_response']);
 		}
 		
-		Daemon::log('ISO with db ID:'.$this->_trans_id.' is of type:'.$this->_trans_type);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'ISO with db ID:'.$this->_trans_id.' is of type:'.$this->_trans_type);
 		// bit 48 is AVS data
 		if ($this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING) {
 			$this->avs_required = true;
@@ -273,7 +274,7 @@ class ISO8583Trans extends ISO8583{
 		}else {
 			// if this a real time (retail) transaction and AVS data is present,
 			// then we send it along
-			if ($this->_trans_type === self::TRANS_TYPE_REALTIME && strlen($this->_trans_row['avs_data']) > 0) {
+			if ($this->_trans_type === self::TRANS_TYPE_RETAIL && strlen($this->_trans_row['avs_data']) > 0) {
 				$this->avs_required = true;
 			}
 		}
@@ -294,7 +295,7 @@ class ISO8583Trans extends ISO8583{
 				// trim to proper length
 			} else {
 				$msg = 'AVS Required for this ISO message, but no AVS data available!';
-				Daemon::log('ISO with db ID:'.$this->_trans_id.' '.$msg);
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'ISO with db ID:'.$this->_trans_id.' '.$msg);
 				if (!$this->loose_avs_check) {
 					throw new Exception($msg);
 				}
@@ -304,11 +305,13 @@ class ISO8583Trans extends ISO8583{
 		
 		$this->addData(59, $this->_trans_row['merchant_zip_code']);
 		
+		// FIXME This needs to be clarified. Swiped transactions need bit60==42
+		// what about manual keyed transaction?
 		// bit 60 is required for any card present transactions
-		if ($this->dataExistsForBit(25) && $this->getDataForBit(25) === "0x00") {
+		if ($this->dataExistsForBit(25) && $this->getDataForBit(25) === "\x00") {
 			$this->addData(60, '42');
 		} else {
-			Daemon::log('Not adding data for bit 60! Bit 25:'.bin2hex($this->getDataForBit(25)));
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Not adding data for bit 60! Bit 25:'.bin2hex($this->getDataForBit(25)));
 		}
 		
 	}
@@ -358,7 +361,7 @@ class ISO8583Trans extends ISO8583{
 				die("Table 36 data is not correct length!");
 			}
 		} else {
-			Daemon::log("Table36 not added. Bit31 data (hex):".bin2hex($this->getDataForBit(31)));
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, "Table36 not added. Bit31 data (hex):".bin2hex($this->getDataForBit(31)));
 		}
 			
 
@@ -377,7 +380,7 @@ class ISO8583Trans extends ISO8583{
 					die("Table 49 data is wrong length! \$tbl49:{$tbl49}");
 				}
 			} else {
-				Daemon::log('NOTICE Missing table 49 data or wrong length. Not adding.');
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Missing table 49 data or wrong length. Not adding.');
 			}
 		}
 			
@@ -958,7 +961,7 @@ class ISO8583Trans extends ISO8583{
 				$result[$f[0]] = '';
 			}
 			$ta = explode("\x1c", $this->getParsedBit63TableData('DS'));
-			//Daemon::log("We have ".count($ta)." elements of table DS data");
+			//Vendor::log(Vendor::LOG_LEVEL_DEBUG, "We have ".count($ta)." elements of table DS data");
 			//echo "About to start foreach loop! Line:".__LINE__."\n";
 			foreach($ta as $field_data) {
 				// the first two characters of the field data is the field number
