@@ -230,6 +230,8 @@ class VendorClientConnection extends NetworkClientConnection {
 			if ($send_result) {
 				// our transaction was sent
 				$this->event('data_sent', strlen($data));
+				// if we sent our data, reset our keepaliveTimer
+				Timer::setTimeout($this->keepaliveTimer);
 			} else {
 				// our transaction failed...
 				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to send data using host '.$this->hostReal.':'.$this->port);
