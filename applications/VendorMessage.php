@@ -29,7 +29,7 @@ class VendorMessage {
 		if ($trans_row['processing_code'] === '200000') {
 			$this->ISO8583 = new ISO8583Trans($trans_row, ISO8583Trans::TRANS_TYPE_REFUND);
 		} else if($trans_row['processing_code'] === '000000'){
-			$this->ISO8583 = new ISO8583Trans($trans_row, ISO8583Trans::TRANS_TYPE_REALTIME);
+			$this->ISO8583 = new ISO8583Trans($trans_row, ISO8583Trans::TRANS_TYPE_RETAIL);
 		}else {
 			$this->ISO8583 = new ISO8583Trans($trans_row);
 		}

@@ -106,15 +106,15 @@ class VendorClientConnection extends NetworkClientConnection {
 */
 	public function stdin($buf) {
 		// append our data to any log file
-		if (Vendor::$debug) {
+		if (Vendor::$log_tcp_stream) {
 			$file = fopen($this->logfile_in, 'a');
 			if ($file !== false) {
 				fwrite($file, $buf);
 				//fwrite($file, "\n\n\n");
 				fclose($file);
 			}
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
 		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Received ' . strlen($buf) . ' bytes of data. Adding to buffer. Buffer length currently:' . strlen($this->buf));
 
 		// apend new data to our input buffer
 		$this->buf .= $buf;
@@ -184,7 +184,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @param callback $cb
 	 */
 	public function addEventHandler($event, $cb) {
-		if (is_callable($cb) && Vendor::$debug){
+		if (is_callable($cb)){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding a callback for event: '.$event);
 		}
 		if (!isset($this->eventHandlers[$event])) {
@@ -211,15 +211,15 @@ class VendorClientConnection extends NetworkClientConnection {
 	public function sendData($data) {		
 		try{
 			// append our data to any log file
-			if (Vendor::$debug) {
+			if (Vendor::$log_tcp_stream) {
 				$file = fopen($this->logfile_out, 'a');
 				if ($file !== false) {
 					fwrite($file, $data);
 					fwrite($file, "\n\n\n");
 					fclose($file);
 				}
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Wrote '.strlen($data).' bytes of data.');
 			}
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Wrote '.strlen($data).' bytes of data.');
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			$send_result = $this->write($data);
 			
