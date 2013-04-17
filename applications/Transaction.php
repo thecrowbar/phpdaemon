@@ -90,6 +90,8 @@ class Transaction {
 	
 	public function outputHtmlView(){
 		$html = '';
+		// add a div for refund and full auth reversal buttons
+		$html .= '<div id="trans_detail_buttons" class="cb"></div>';
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->db_row:'.print_r($this->db_row, true));
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this:'.print_r($this, true));
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'using $elems:'.print_r($this->elems, true));
@@ -137,8 +139,6 @@ class Transaction {
 				$html .= "Unknown card type: {$this->cc_type}";
 		}
 		
-		// add a div for various buttons
-		$html .= '<div id="trans_detail_buttons" class="cb"></div>';
 		return $html;
 	}
 	
@@ -214,7 +214,7 @@ class Transaction {
 		$ax_elems = array(
 			array('Issuer Trans Id', array('issuer_trans_id', 'text', 30)),
 			array('American Express Indicator', array('aei', null, 2)),
-			array('POS Data', array('ax_pos_data', null, 14))
+			array('POS Data', array('pos_data', null, 14))
 		);
 		$html = '<hr /><div class="card_heading">American Express Specific Details</div>';
 		return $html.$this->parseOutputArray($ax_elems);
