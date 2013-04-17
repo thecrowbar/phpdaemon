@@ -14,7 +14,11 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public $eventHandlers = array();
 	public $size = 0;
-	public $timeout = 600;
+	/**
+	 * Number of seconds before keep alive timer will fire
+	 * @var Int
+	 */
+	public $keepaliveTimeout = 600;
 	/**
 	 * Log file to record all incoming data to
 	 * @var String
@@ -66,7 +70,7 @@ class VendorClientConnection extends NetworkClientConnection {
 		$this->keepaliveTimer = setTimeout(function($timer) use($conn) {
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing! About to send keep-alive ISO8583 message');
 			$conn->ping();
-		}, 1e6 * 90);
+		}, 1e6 * $this->keepaliveTimeout);
 		
 		// make sure we fire any callbacks on the parent objects
 		parent::onReady();
