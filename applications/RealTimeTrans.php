@@ -105,7 +105,7 @@ class RealTimeTrans extends Vendor{
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
 
 				$query = SQL::buildQueryForOriginalTrans($msg, $app);
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to execute query:'.$query);
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to execute query:'.$query);
 				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
 					// check for a successful sql query
@@ -235,8 +235,16 @@ class RealTimeTrans extends Vendor{
 	 * @param Int $id - the DB record id of the timer to cancel
 	 */
 	public function clearAutoReversalTimer($id) {
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We need to clear auto reversal timer for transID:'.$id);
-		$this->auto_reversal_timers[$id]->cancel();
+		
+		if (array_key_exists($id, $this->auto_reversal_timers)) {
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Canceling auto reversal timer for transID:'.$id);
+			$this->auto_reversal_timers[$id]->cancel();
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Removing auto reversal timer for transID:'.$id);
+			unset($this->auto_reversal_timers[$id]);
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Reversal Timer not found for $id: '.$id.'! timers array contains: '.count($this->auto_reversal_timers).' elements');
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Reversal Timers:'.print_r(array_keys($this->auto_reversal_timers), true));
+		}
 	}
 	
 	// </editor-fold>
