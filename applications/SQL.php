@@ -21,14 +21,14 @@ class SQL {
 			msg_type, pri_acct_no, cc_last_four, 
 			cc_type, processing_code, trans_amount, 
 			cc_exp, pos_entry_pin, pos_condition_code,
-			avs_response, trans_type, acquirer_reference_data)
+			avs_response, trans_type)
 			VALUES(
 			{$ta['terminal_id']}, NOW(),
 			'{$ta['user_name']}', '{$ta['sale_site_id']}', '{$ta['sx_order_number']}',
 			'0100', '{$ta['pri_acct_no']}', '{$ta['cc_last_four']}', 
 			'{$ta['cc_type']}', '200000', {$ta['trans_amount']}, 
 			'{$ta['cc_exp']}', '{$ta['pos_entry_pin']}', '{$ta['pos_condition_code']}',
-			'{$ta['avs_response']}', 3, 1)";
+			'{$ta['avs_response']}', 3)";
 		return $query;
 	}
 	
@@ -43,7 +43,7 @@ class SQL {
 				FROM fd_trans fdt
 				LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
 				LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
-				WHERE receipt_number = '{$msg->receipt_number}' 
+				WHERE fdt.id = '{$msg->retrieval_reference_number}' 
 					AND ti.terminal_id = '{$msg->terminal_id}'";
 		
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Query for original trans:'.$query);
@@ -102,9 +102,11 @@ class SQL {
 				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unknown card type:'.$trans_row['cc_type'].', pri_acct_no:'.$trans_row['pri_acct_no']);
 		}
 		
-		// add a query for the reversal log table
-		$queries[] = "INSERT INTO full_auth_reversal (original_id, reversal_id)
-			VALUES({$trans_row['id']}, {$new_trans_id})";
+		// add a query for the reversal log table; do not add for timeout reversal
+		if ($trans_row['trans_type'] === ISO8583Trans::TRANS_TYPE_REVERSAL) {
+			$queries[] = "INSERT INTO full_auth_reversal (original_id, reversal_id)
+				VALUES({$trans_row['id']}, {$new_trans_id})";
+		}
 		
 		return $queries;
 	}
@@ -112,28 +114,53 @@ class SQL {
 	/**
 	 * buildQueryForReversal() - create a query to reverse the given DB record
 	 * @param Array $t - DB record of the transaction to reverse
+	 * @param Int $type - named const from ISO8583Trans class (5 or 6 are the only valid types)
 	 * @return String
 	 */
-	public static function buildQueryForReversal($t){
+	public static function buildQueryForReversal($t, $type){
+		// 2013-04-17 processing_code value is in question
+		// Eileen from FD stated in her email from 4-16 that for full auth reversal
+		// the value should be 009000. The spec lists that as Debit reversal
+		// Credit reversal is listed as 000000
 		$q = "INSERT INTO fd_trans 
 			(trans_type, terminal_id, customer_site_id,
 			user_name, sale_site_id, sx_order_number,
 			msg_type, pri_acct_no, cc_last_four,
 			cc_type, processing_code, trans_amount,
 			receipt_number,
-			trans_dt, cc_exp, pos_entry_pin,
-			acquirer_reference_data, retrieval_reference_num,
+			trans_dt, cc_exp, pos_entry_pin, retrieval_reference_num,
+			auth_iden_response, response_code, avs_response,
+			avs_data, response_text, table49_response)
+			VALUES({$type},(SELECT id FROM terminal_info WHERE terminal_id = '{$t['terminal_id']}'), '{$t['customer_site_id']}',
+			'{$t['user_name']}', '{$t['sale_site_id']}', '{$t['sx_order_number']}',
+			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
+			'{$t['cc_type']}', '000000', '{$t['trans_amount']}',
+			'{$t['receipt_number']}',
+			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}', '{$t['retrieval_reference_num']}', 
+			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
+			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}')
+			";
+		return $q;
+	}
+	
+	public static function buildQueryForTimeoutReversal($t){
+		$q = "INSERT INTO fd_trans
+			(trans_type, terminal_id, customer_site_id,
+			user_name, sale_site_id, sx_order_number,
+			msg_type, pri_acct_no, cc_last_four,
+			cc_type, processing_code, trans_amount,
+			receipt_number,
+			trans_dt, cc_exp, pos_entry_pin, retrieval_reference_num,
 			auth_iden_response, response_code, avs_response,
 			avs_data, response_text, table49_response)
 			VALUES(5,(SELECT id FROM terminal_info WHERE terminal_id = '{$t['terminal_id']}'), '{$t['customer_site_id']}',
 			'{$t['user_name']}', '{$t['sale_site_id']}', '{$t['sx_order_number']}',
 			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
-			'{$t['cc_type']}', '000000', '{$t['trans_amount']}',
+			'{$t['cc_type']}', '009000', '{$t['trans_amount']}',
 			'{$t['receipt_number']}',
-			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}',
-			'{$t['acquirer_reference_data']}', '{$t['retrieval_reference_num']}', 
+			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}','{$t['retrieval_reference_num']}', 
 			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
-			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}')
+			'4021', '{$t['response_text']}', '{$t['table49_response']}')
 			";
 		return $q;
 	}

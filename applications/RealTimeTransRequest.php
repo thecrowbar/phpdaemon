@@ -256,11 +256,15 @@ class RealTimeTransRequest extends HTTPRequest{
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating JSON Response from iso:'.get_class($iso));
 		//if (is_object($iso) && )
 		$resp = new stdClass();
-		$resp->response_code = $iso->getDataForBit(39);
-		$resp->approved = ($resp->response_code === '00')?true:false;
-		$resp->avs_response = $iso->avs_response;
-		$resp->cvvs_response = $iso->cvc_response;
-		$resp->trans_id = $iso->original_trans_id;
+		if (is_object($iso)) {
+			if (method_exists($iso, 'getDataForBit')) {
+				$resp->response_code = $iso->getDataForBit(39);
+			}
+			$resp->approved = ($resp->response_code === '00')?true:false;
+			$resp->avs_response = $iso->avs_response;
+			$resp->cvvs_response = $iso->cvc_response;
+			$resp->trans_id = $iso->original_trans_id;
+		}
 		echo json_encode($resp);
 	}
 	
@@ -336,8 +340,8 @@ class RealTimeTransRequest extends HTTPRequest{
 				// add a timer to setup the auto_reversal transactions
 				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding an auto-reversal timer for transID:'.$id);
 				$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $req, $id){
-					//$req->createReversalTransJob($id);
 					Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Auto reversal timer fired for transID:'.$id);
+					$req->createReversalTransJob($id, ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL);
 				}, 1e6 * $app->auto_reversal_timeout);
 			}
 		});
@@ -372,16 +376,17 @@ class RealTimeTransRequest extends HTTPRequest{
 	 * createReversalTransJob() - pull info on a transaction and create a new
 	 * transaction to reverse it
 	 * @param int $id - DB record id of the id we will reverse
+	 * @param int $type - named constant from ISO8583Trans class
 	 */
-	public function createReversalTransJob($id) {
+	public function createReversalTransJob($id, $type = ISO8583Trans::TRANS_TYPE_REVERSAL) {
 		$app = $this->appInstance;
 		$req = $this;
 		$q = SQL::singleTransDetailQuery($id);
-		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req){
+		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req, $type){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
-			$q = SQL::buildQueryForReversal($result[0]);
+			$q = SQL::buildQueryForReversal($result[0], $type);
 			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
