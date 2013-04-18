@@ -25,7 +25,7 @@ class ISO8583Trans extends ISO8583{
 	const MSG_CLASS_CAP_ONLY				= 3;
 	
 	// This is used for bit63 table 36
-	const CUST_SVC_PHONE					= '8775550054';
+	const CUST_SVC_PHONE					= '87723550054';
 	
 	/**
 	 * Transaction type. Use the const values form this class
@@ -129,6 +129,8 @@ class ISO8583Trans extends ISO8583{
 			$this->_trans_type = $trans_type;
 			$this->_trans_row = $db_result;
 			
+			// 2013-04-17 we should always have a trans_type in the db_row.
+			// The values come from the trans_type_list table
 			// check if we have a trans_type in our db_row values
 			if (array_key_exists('trans_type', $this->_trans_row)) {
 				$this->_trans_type = (int)$this->_trans_row['trans_type'];
@@ -136,7 +138,7 @@ class ISO8583Trans extends ISO8583{
 
 			$this->_trans_id = $this->_trans_row['id'];
 			if (!array_key_exists('id', $this->_trans_row)) {
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->_trans_row:'.print_r($this->_trans_row, true));
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'missing id in $this->_trans_row:'.print_r($this->_trans_row, true));
 			}
 			if ($this->_original_trans_id === -1 && array_key_exists('original_trans_id',$this->_trans_row)) {
 				$this->_original_trans_id = $this->_trans_row['original_trans_id'];
@@ -167,7 +169,10 @@ class ISO8583Trans extends ISO8583{
 			// set and check the type of card we are processing
 			$this->setCCType($this->credit_card->card_type);
 			if ($this->credit_card->card_type === 'UNKNOWN') {
+				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Unknown card type for card:'.$this->_pri_acct_no);
 				throw new Exception('Unknown card type! Card Number:'.$this->_pri_acct_no);
+			} else {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Card ('.$this->_pri_acct_no.') is of type:'.$this->card_type);
 			}
 			$this->_addDataToISO();
 			if ($this->_trans_type !== self::TRANS_TYPE_REFUND) {
@@ -179,19 +184,16 @@ class ISO8583Trans extends ISO8583{
 	
 
 	private function _addDataToISO() {
-		// FIXME this needs to be fixed in the database
-		//$this->_trans_row['acquirer_reference_data'] = '1';
 		$this->addMTI($this->_trans_row['msg_type']);
 		$this->addData(2, $this->_trans_row['pri_acct_no']);
 		$this->addData(3, $this->_trans_row['processing_code']);
 		$this->addData(4, $this->_trans_row['trans_amount']*100);
 		$this->addData(11, $this->_trans_row['receipt_number']);
-		// 2013-01-07 the trans_dt from the DB is the date Beth sets up the batches
-		// we want to send the actual date of the transaction
+		// The submit_dt field in the database is set just before the data
+		// is passed to this class for constructing the ISO message. It is
+		// very close to being "now"
 		$this->addData(12, date('His',strtotime($this->_trans_row['submit_dt']))); // Ex 221047
 		$this->addData(13, date('md',strtotime($this->_trans_row['submit_dt']))); // Ex 1003 for Oct 3rd
-		//$this->addData(12, date('His', strtotime('now')));
-		//$this->addData(13, date('md', strtotime('now')));
 		$this->addData(14, $this->_trans_row['cc_exp']); // this is YYMM format
 		$this->addData(18, $this->_trans_row['merchant_category_code']);
 		$this->addData(22, $this->_trans_row['pos_entry_pin']);
@@ -200,9 +202,7 @@ class ISO8583Trans extends ISO8583{
 		// Bit 25 needs to be '04' for recurring transaction
 		if ($this->_trans_type == self::TRANS_TYPE_RECURRING_BILLING) {
 			$this->addData(25, '04');
-		} else if ($this->_trans_type == self::TRANS_TYPE_REFUND) {
-			$this->addData(25,$this->_trans_row['pos_condition_code']);
-		}else{
+		} else{
 			$this->addData(25, $this->_trans_row['pos_condition_code']);
 		}
 		
@@ -226,19 +226,20 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(35, $t->pan.'='.$t->exp.$t->svc_code.$t->dd);
 		}
 
-		if (strlen($this->_trans_row['retrieval_reference_num']) < 1) {
-			// if we have no retrieval reference number, then use the same one
-			// as used for receipt number (bitmap 11)
-			$this->addData(37, $this->_trans_row['receipt_number']);
-		} else {
-			$this->addData(37, $this->_trans_row['retrieval_reference_num']);
-		}
+		// 2013-04-17 Bit 37 is now the DB record ID for all transactions
+		$this->addData(37, $this->_trans_id);
+//		if (strlen($this->_trans_row['retrieval_reference_num']) < 1) {
+//			// if we have no retrieval reference number, then use the same one
+//			// as used for receipt number (bitmap 11)
+//			$this->addData(37, $this->_trans_row['receipt_number']);
+//		} else {
+//			$this->addData(37, $this->_trans_row['retrieval_reference_num']);
+//		}
 		
 		// bit 38 is authorization identification response; submitted for reversals
 		// bit 39 is the response code; submitted only on reversal
 		if ($this->_trans_type === self::TRANS_TYPE_REVERSAL) {
 			$this->addData(38, $this->_trans_row['auth_iden_response']);
-			
 			$this->addData(39, $this->_trans_row['response_code']);
 		}
 		
@@ -270,7 +271,14 @@ class ISO8583Trans extends ISO8583{
 			// either customer/cashier initiated or system generated
 			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
 			$this->addData(48,254000); // this is a customer/cashier initiated
-			// $this->addData(48,254021); // this is system initiated due to timeout
+			// 2013-04-17 Bit 52 is only for debit
+			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
+		}else if($this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL){
+			// this is an auto-generated reversal due to timeout
+			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
+			$this->addData(48,254021); // this is system initiated due to timeout
+			// 2013-04-17 Bit 52 is only for debit
+			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
 		}else {
 			// if this a real time (retail) transaction and AVS data is present,
 			// then we send it along
@@ -321,6 +329,7 @@ class ISO8583Trans extends ISO8583{
 		$bit63_length = 0;
 		$bit63_data = "";
 		$tbl14 = "";
+		$tbl33 = "";
 		$tbl36 = "";
 		$tbl49 = "";
 		$tbl55 = "";
@@ -339,23 +348,49 @@ class ISO8583Trans extends ISO8583{
 				die("Table 14 data is wrong length! MTI:".$this->getMTI()." Table 14 length:".strlen($tbl14).", Table 14 data: {$tbl14}");
 			}
 		}
+		
+		// 2013-04-17 per Eileen's newest email, we do not need table 33
+//		// calculate our table33 data. In normal Debig transactions this is DUKPT
+//		// (Derivied Unique Key Per Transactions). For reversals we send in 
+//		// null values
+//		if ($this->_trans_type === self::TRANS_TYPE_REVERSAL ||
+//				$this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL) {
+//			$tbl33 .= $this->convertDEC2BCD('0022'); // table length in BCD
+//			$tbl33 .= 33; // table number as ASCII
+//			$tbl33 .= "F"; // 1 byte pad character
+//			$tbl33 .= "FFFFFFFFF"; // 9 byte Base Detrivation Key ID (pad on left with 'F'
+//			$tbl33 .= "00000"; // 5 bytes device ID
+//			$tbl33 .= "00000"; // 5 byte transaction counter
+//		}
 
 		// calculate our table 36 data
 		// Table 36 is Additional Addendum Data
-		// only used for direct marketing and retail with host capture
-		if ($this->getDataForBit(31) === "\x011") {
-//				&& ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING || $this->trans_type === self::TRANS_TYPE_REALTIME)) {
+		// only used for direct marketing and retail with host capture and MTI 0100
+		if ($this->getDataForBit(31) === "\x011" && $this->_mti === self::MTI_0100
+				&& ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING 
+					|| $this->_trans_type === self::TRANS_TYPE_RETAIL
+					|| $this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING)) {
 			$tbl36 .= $this->convertDEC2BCD('0060'); // BCD length of data == 60
 			$tbl36 .= 36; // table number 
 			$tbl36 .= 1; // table version 1 (1 is only option)
-			$tbl36 .= self::CUST_SVC_PHONE; // let the cust know how to contact us
-			// per my email with Manana (Sr Certification Analyst) if we require
-			// customer service phone, then we should send it and space fill order number
-			// the order number is the transaction id from our database.
-			// space-filled, left justified
-			//$tbl36 .= strpad($this->_trans_row['id'], 15, ' ', STR_PAD_LEFT);
-			//$tbl36 .= $this->_trans_row['addendum_data_tbl_36'];
-			// pad with spaces to proper length
+			if ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING ||
+					$this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING) {
+				$tbl36 .= self::CUST_SVC_PHONE; // let the cust know how to contact us
+				// per my email with Manana (Sr Certification Analyst) if we require
+				// customer service phone, then we should send it and space fill order number
+				// the order number is the transaction id from our database.
+				// space-filled, left justified
+			} else {
+				$tbl36 .= '          '; // 10 digits (phone number for direct marketing
+				// the order number is sale site_id * 10,000,000 + sx order_number
+				// Spec says 15 bytes, but Eileen (Sr Cert Specialist) stated that only 12 bytes
+				// will appear on cust account
+				$order_num = substr($this->_trans_row['sale_site_id'].'-'.$this->_trans_row['sx_order_number'],0,12);
+				$tbl36 .= str_pad($order_num, 12, ' ', STR_PAD_RIGHT);
+			}
+				//$tbl36 .= strpad($this->_trans_row['id'], 15, ' ', STR_PAD_LEFT);
+				//$tbl36 .= $this->_trans_row['addendum_data_tbl_36'];
+				// pad with spaces to proper length
 			$tbl36 .= str_pad('',(62 - strlen($tbl36)),' ');
 			if (strlen($tbl36) != 62) {
 				die("Table 36 data is not correct length!");
@@ -445,7 +480,7 @@ class ISO8583Trans extends ISO8583{
 		}
 
 		// combine all our bitmap 63 data
-		$bit63_data = $tbl14 . $tbl36 . $tbl49 . $tbl55 . $tbl60. $tblVI. $tblMC. $tblDS;
+		$bit63_data = $tbl14 . $tbl33 . $tbl36 . $tbl49 . $tbl55 . $tbl60. $tblVI. $tblMC. $tblDS;
 		$bit63_length += strlen($bit63_data);
 
 		$this->addData(63, $bit63_data);
