@@ -1,52 +1,14 @@
-var ws;
-var ws_connected = false;
-function create() {
-	// Example
-	ws = new WebSocket('ws://'+document.domain+':8047/VendorWS');
-	ws.onopen = function() {
-		document.getElementById('log').innerHTML += 'WebSocket opened <br/>';
-		ws_connected = true;
-	}
- 	ws.onmessage = function(e) {
-		//debugger;
-		var resp = $.parseJSON(e.data);
-		if (resp.hasOwnProperty('trans_id')) {
-			// find the id record on screen
-			var scr_rec = $('tbody').find('[trans_id='+resp.trans_id+']');
-			// update the response text
-			$(scr_rec).find('[col_name=auth_iden_response]').html(resp.auth_iden_resp);
-			// update the response_code
-			$(scr_rec).find('[col_name=response_code]').html(resp.response_code);
-			//debugger;
-		}
-		document.getElementById('log').innerHTML += 'WebSocket message: '+e.data+' <br/>';
-	}
-	ws.onclose = function() {
-		document.getElementById('log').innerHTML += 'WebSocket closed <br/>';
-		ws_connected = false;
-	}
-}
 
-function sendText() {
-	var text = jQuery('#command').val();
-	var result = ws.send(text);
-	alert('result is of type:'+typeof(result)+', with value:'+result);
-}
-
-function sendObject(obj) {
-
-	if (!ws_connected) {
-		create();
-		// call our sendObject function again after a 500 msec timeout
-		var firstTrans = setTimeout(function(){
-			sendObject(obj);
-		}, 500);
-	}
-	if (ws_connected) {
-		ws.send($.toJSON(obj));
-	}
-}
 $(document).ready(function(){
+	// attach our button click handlers
+	$('#create_websocket').on('click', function(){create('VendorWS')});
+	$('#send_ping').on('click', function(){ws.send('ping')});
+	$('#close_websocket').on('click', function(){ws.close()});
+	$('#send_command').on('click', function(){
+		ws.send($('#command').val())
+	});
+	$('#send_object').on('click', function(){sendObject({command:'send_trans',trans_id:'1234'}, 'VendorWS')});
+	$('#send_text').on('click', sendText);
 	// attach the click handler to the table rows so each trans can be submitted
 	// by clicking on the correct HTML table row
 	$('.pending_trans').each(function(){
@@ -57,16 +19,37 @@ $(document).ready(function(){
 			$(this).removeClass('highlight');
 		});
 		$(this).on('click', function(tid){
-			// send the trans action if this row is clicked
-			var tid = $(this).attr('trans_id');
+			// check if this row has already been processed; if so ask about a refund
+			var row_tid = $(this).attr('trans_id');
 			var title_str = $(this).attr('title');
 			var obj = {
-				command: 'send_trans',
-				trans_id: tid,
+				command: '',
+				trans_id: row_tid,
 				title: title_str
 			}
+			var resp_elem = $(this).find('[col_name=response_code]');
+			if (resp_elem.length < 1) {
+				resp_elem = $(this).find('[col_name=rsp_code]');
+			}
+			var resp_code = resp_elem.html();
+			if (resp_code.length > 0) {
+				if(confirm('This transaction has already been processed. Would you like to refund it?')) {
+					obj.command = 'refund_trans';
+				}
+			} else {
+				// send the trans action if this row is clicked
+				obj.command = 'send_trans';
 
-			sendObject(obj);
+				
+			}
+			sendObject(obj, 'VendorWS');
 		})
-	})
+	});
+	
+	// attach our table sorter
+	$('#pending_trans').tablesorter({
+		debug: false,
+		theme: 'blue',
+		widgets: ['zebra']
+	});
 });
