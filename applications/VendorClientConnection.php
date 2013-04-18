@@ -13,7 +13,13 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @var Array[] event name => callback function
 	 */
 	public $eventHandlers = array();
-	public $size = 0;
+	/**
+	 * Flag used to signal the discarding of received data. This is usefule when
+	 * trying to test the automatic timeout reversal process. For production use
+	 * this should be false.
+	 * @var Bool
+	 */
+	public $discardResponses = false;
 	/**
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
@@ -156,7 +162,11 @@ class VendorClientConnection extends NetworkClientConnection {
 			$this->finish();
 			return;
 		}
-		$this->event('data_recvd', binarySubstr($this->buf, $pkt_start, $pkt_size));
+		if ($this->discardResponses) {
+			Vendor::logger(Vendor::LOG_LEVEL_EMERGENCY, __METHOD__.':'.__LINE__.' Not processing received data to test auto reversal');
+		} else {
+			$this->event('data_recvd', binarySubstr($this->buf, $pkt_start, $pkt_size));
+		}
 		$this->buf = binarySubstr($this->buf, $pkt_start + $pkt_size);
 
 		goto start;
