@@ -474,56 +474,56 @@ class Vendor extends AppInstance{
 	}
 	
 	
-	/**
-	 * Flush out a complete ISO8583Trans object from the returned message data
-	 * @param ISO8583Trans $msg - the empty ISO8583 trans object
-	 * @param Array $sr - the DB record from the original transaction.
-	 * @return ISO8583Trans
-	 * @throws Exception
-	 */
-	public function createResponseMsg($msg, $sr){
-		// add data from the original trans into our new object
-		try{
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
-			$msg->original_trans_id = $sr['id'];
-			$msg->original_trans_amount = $sr['trans_amount'];
-			if (self::$decrypt_data) {
-				$data = self::decrypt_data($sr['pri_acct_no']);
-				if (is_array($data)){
-					throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
-				}else {
-					// save our encrypted account number
-					$msg->encrypted_acct_no = $sr['pri_acct_no'];
-					$msg->pri_acct_no = $data;
-					$msg->credit_card = new CreditCard($msg->pri_acct_no);
-					$msg->card_type = $msg->credit_card->card_type;
-				}
-			} else {
-				// pull the card type from the original trans query data
-				switch($sr['cc_type']) {
-					case 'VS':
-						$msg->card_type = 'Visa';
-						break;
-					case 'MC':
-						$msg->card_type = 'Master Card';
-						break;
-					case 'AX':
-						$msg->card_type = 'American Express';
-						break;
-					case 'DS':
-						$msg->card_type = 'Discover';
-						break;
-					default:
-						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
-				}
-			}
-
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
-		}catch(Exception $e){
-			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
-		}
-		return $msg;
-	}
+//	/**
+//	 * Flush out a complete ISO8583Trans object from the returned message data
+//	 * @param ISO8583Trans $msg - the empty ISO8583 trans object
+//	 * @param Array $sr - the DB record from the original transaction.
+//	 * @return ISO8583Trans
+//	 * @throws Exception
+//	 */
+//	public function createResponseMsg($msg, $sr){
+//		// add data from the original trans into our new object
+//		try{
+//			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
+//			$msg->original_trans_id = $sr['id'];
+//			$msg->original_trans_amount = $sr['trans_amount'];
+//			if (self::$decrypt_data) {
+//				$data = self::decrypt_data($sr['pri_acct_no']);
+//				if (is_array($data)){
+//					throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
+//				}else {
+//					// save our encrypted account number
+//					$msg->encrypted_acct_no = $sr['pri_acct_no'];
+//					$msg->pri_acct_no = $data;
+//					$msg->credit_card = new CreditCard($msg->pri_acct_no);
+//					$msg->card_type = $msg->credit_card->card_type;
+//				}
+//			} else {
+//				// pull the card type from the original trans query data
+//				switch($sr['cc_type']) {
+//					case 'VS':
+//						$msg->card_type = 'Visa';
+//						break;
+//					case 'MC':
+//						$msg->card_type = 'Master Card';
+//						break;
+//					case 'AX':
+//						$msg->card_type = 'American Express';
+//						break;
+//					case 'DS':
+//						$msg->card_type = 'Discover';
+//						break;
+//					default:
+//						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
+//				}
+//			}
+//
+//			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
+//		}catch(Exception $e){
+//			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
+//		}
+//		return $msg;
+//	}
 	
 	/**
 	 * updateClientWS() - send an update to the remote client over websocket
@@ -725,11 +725,12 @@ class Vendor extends AppInstance{
 	public function createJobFromQuery($app, $req, $job_name, $q, $wake, $cb = null){
 		$job = $req->job;
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
-		$req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
+		$job_result = $req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
 			// get our sql connection
 			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 				if (!$success) {
-					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
 				}
 				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 					// check if we should log all queries
@@ -790,10 +791,16 @@ class Vendor extends AppInstance{
 			
 		}); // end of job callback
 		
-		//  if not set to wake the request, execute our job immediately
-		if (!$wake){
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
-			$job();
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'addJob('.$job_name.') result:'.$job_result);
+		if($job_result === false) {
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Job('.$job_name.') returned false! Retrying with updated name');
+			$app->createJobFromQuery($app, $req, $job_name.'2', $q, $wake, $cb);
+		} else {
+			//  if not set to wake the request, execute our job immediately
+			if (!$wake){
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
+				$job();
+			}
 		}
 	}
 	
