@@ -383,6 +383,12 @@ class ISO8583 {
 	public $receipt_number = -1;
 	
 	/**
+	 * Bit 37 data. This is the DB record ID for this transaction
+	 * @var Int
+	 */
+	public $retrieval_reference_number = -1;
+	
+	/**
 	 * Terminal ID that generated this message. Bit 41
 	 * @var int
 	 */
@@ -1212,6 +1218,7 @@ class ISO8583 {
 			// set several key values so we can uniquely identify this transaction
 			$fields = array(
 				11 => 'receipt_number',
+				37 => 'retrieval_reference_number',
 				41 => 'terminal_id',
 				42 => 'merchant_id',
 				44 => 'avs_response'
