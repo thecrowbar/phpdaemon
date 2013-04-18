@@ -182,7 +182,9 @@ class RealTimeTransRequest extends HTTPRequest{
 		
 		// run our job
 		$job();
-		$sleep_time = 5;
+		// we sleep for 50 seconds to give the auto reversal timer enough time to
+		// fire if the remote end does not respond
+		$sleep_time = 50;
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'->transID:'.$this->transID.' being put to sleep for '.$sleep_time.' seconds');
 
 		// sleep for $sleep_time seconds to give the query time to execute
@@ -384,7 +386,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		$q = SQL::singleTransDetailQuery($id);
 		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req, $type){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
 			$q = SQL::buildQueryForReversal($result[0], $type);
 			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
