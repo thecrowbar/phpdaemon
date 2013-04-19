@@ -53,6 +53,13 @@ class ISO8583Trans extends ISO8583{
 	private $_original_trans_id = -1;
 	
 	/**
+	 * For followup transactions (0400, 0100 incremental auth) this is the ID
+	 * of the original transaction
+	 * @var Int
+	 */
+	public $master_trans_id = -1;
+	
+	/**
 	 * The account number for this transaction
 	 * @var String
 	 */
@@ -114,6 +121,10 @@ class ISO8583Trans extends ISO8583{
 		$this->$name = $val;
 	}
 	
+	public function __get($name) {
+		return $this->$name;
+	}
+	
 	/**
 	 * Create a new ISO8583Trans object. Can be filled with data from DB
 	 * @param array $db_result - DB Row of transaction 
@@ -141,7 +152,11 @@ class ISO8583Trans extends ISO8583{
 				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'missing id in $this->_trans_row:'.print_r($this->_trans_row, true));
 			}
 			if ($this->_original_trans_id === -1 && array_key_exists('original_trans_id',$this->_trans_row)) {
-				$this->_original_trans_id = $this->_trans_row['original_trans_id'];
+				$this->_original_trans_id = (int)$this->_trans_row['original_trans_id'];
+			}
+			
+			if ($this->master_trans_id === -1 && array_key_exists('master_trans_id',$this->_trans_row)) {
+				$this->master_trans_id = (int)$this->_trans_row['master_trans_id'];
 			}
 			
 			$this->_pri_acct_no = $this->_trans_row['pri_acct_no'];
@@ -175,7 +190,11 @@ class ISO8583Trans extends ISO8583{
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Card ('.$this->_pri_acct_no.') is of type:'.$this->card_type);
 			}
 			$this->_addDataToISO();
-			if ($this->_trans_type !== self::TRANS_TYPE_REFUND) {
+			
+			// add our tables in the bit 63 data
+			// Refund and timeout reversal transactions have no bit 63 tables
+			if ($this->_trans_type !== self::TRANS_TYPE_REFUND && 
+					$this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
 				// refunds have no bit 63 tables
 				$this->_addBit63Data();
 			}
@@ -226,8 +245,19 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(35, $t->pan.'='.$t->exp.$t->svc_code.$t->dd);
 		}
 
-		// 2013-04-17 Bit 37 is now the DB record ID for all transactions
-		$this->addData(37, $this->_trans_id);
+		// 2013-04-17 Bit 37 is now the DB record ID for the original 0100
+		// transaction. 0400 and followup 0100 (we don't use these) use the 
+		// bit 37 data from the first transaction. The original bit37 data
+		// comes in 'master_trans_id' field
+		if ($this->master_trans_id !== -1) {
+			$this->addData(37, $this->_trans_row['master_trans_id']);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Using master_trans_id:'.$this->master_trans_id.' for Bit 37 value!');
+		} else {
+			// use the id of the record from the DB
+			$this->addData(37, $this->_trans_id);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Using _trans_id:'.$this->_trans_id.' for Bit 37 value!');
+		}
+		
 //		if (strlen($this->_trans_row['retrieval_reference_num']) < 1) {
 //			// if we have no retrieval reference number, then use the same one
 //			// as used for receipt number (bitmap 11)
@@ -267,16 +297,18 @@ class ISO8583Trans extends ISO8583{
 				$this->avs_required = true;
 			}
 		} else if($this->_trans_type === self::TRANS_TYPE_REVERSAL){
+			// 2013-04-18 Per Manana Bit48 on Reversal is only used for Debit testing
 			// for reversal transactions we include the reason for the reversal
 			// either customer/cashier initiated or system generated
-			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
-			$this->addData(48,254000); // this is a customer/cashier initiated
+//			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
+//			$this->addData(48,254000); // this is a customer/cashier initiated
 			// 2013-04-17 Bit 52 is only for debit
 			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
 		}else if($this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL){
+			// 2013-04-18 Per Manana Bit48 on Reversal is only used for Debit testing
 			// this is an auto-generated reversal due to timeout
-			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
-			$this->addData(48,254021); // this is system initiated due to timeout
+//			$this->DATA_ELEMENT[48] = array('ans', 6,		1,	'bcd',	2,	' ');
+//			$this->addData(48,254021); // this is system initiated due to timeout
 			// 2013-04-17 Bit 52 is only for debit
 			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
 		}else {
@@ -347,6 +379,8 @@ class ISO8583Trans extends ISO8583{
 			if (strlen($tbl14) != 50) {
 				die("Table 14 data is wrong length! MTI:".$this->getMTI()." Table 14 length:".strlen($tbl14).", Table 14 data: {$tbl14}");
 			}
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 14 not added. Trans_type:'.$this->_trans_type.' Card Type:'.$this->card_type);
 		}
 		
 		// 2013-04-17 per Eileen's newest email, we do not need table 33
@@ -397,26 +431,24 @@ class ISO8583Trans extends ISO8583{
 			}
 		} else {
 			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, "Table36 not added. Bit31 data (hex):".bin2hex($this->getDataForBit(31)));
-		}
+		} 
 			
-
-		// FIXME FIXME table49 CVV/CVC2 code is only used for real-time auth
-		// table 49 is the CVC/CVS/CID code from the card.
-		// It is not present for recurring billing transactions
-		if ($this->_trans_type !== self::TRANS_TYPE_RECURRING_BILLING) {
-			// calculate our table 49 data
-			if (array_key_exists('table49', $this->_trans_row) && strlen($this->_trans_row['table49']) > 0) {
-				//echo "Adding Table 49 data!\n";
-				$tbl49 .= $this->convertDEC2BCD('0007');
-				$tbl49 .= 49;
-				$tbl49 .= 1; // presence indicator see pg4-95 1==value present
-				$tbl49 .= str_pad($this->_trans_row['table49'], 4, ' ', STR_PAD_LEFT);
-				if (strlen($tbl49)!= 9) {
-					die("Table 49 data is wrong length! \$tbl49:{$tbl49}");
-				}
-			} else {
-				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Missing table 49 data or wrong length. Not adding.');
+		// table 49 is the CVC/CVS/CID code from the card. Because all of our
+		// recurring billing is from information stored in a DB, we never use
+		// table 49 with recurring billing. Only manually entered transactions
+		// will have table49 data
+		// calculate our table 49 data
+		if (array_key_exists('table49', $this->_trans_row) && strlen($this->_trans_row['table49']) > 0) {
+			//echo "Adding Table 49 data!\n";
+			$tbl49 .= $this->convertDEC2BCD('0007');
+			$tbl49 .= 49;
+			$tbl49 .= 1; // presence indicator see pg4-95 1==value present
+			$tbl49 .= str_pad($this->_trans_row['table49'], 4, ' ', STR_PAD_LEFT);
+			if (strlen($tbl49)!= 9) {
+				die("Table 49 data is wrong length! \$tbl49:{$tbl49}");
 			}
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Missing table 49 data or wrong length. Not adding.');
 		}
 			
 
@@ -431,6 +463,8 @@ class ISO8583Trans extends ISO8583{
 			if (strlen($tbl55) != 7) {
 				die("Table 55 data is wrong length");
 			}
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 55 not added. Trans_type:'.$this->_trans_type.' Card Type:'.$this->card_type);
 		}
 
 		// calculate our table 60 data
@@ -443,40 +477,49 @@ class ISO8583Trans extends ISO8583{
 			if (strlen($tbl60) != 6) {
 				die("Table 60 data is of wrong length!");
 			}
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 60 not added. Trans_type:'.$this->_trans_type);
 		}
 		
-		// calculate the card specific tables VI, MC, DS
-		if (strtoupper($this->card_type) === 'VISA') {
-			if ($this->getMTI() === self::MTI_0100 || // make sure this is an authorization
-					($this->dataExistsForBit(31) && // or host_draft_capture is set
-					$this->getDataForBit(31) == "\x011")) { 
-				$tblVI .= $this->convertDEC2BCD('0002');
-				$tblVI .= 'VI';
+		// Card specific tables are not used for any reversal transactions (MTI = 0400)
+		if ($this->_trans_type !== self::TRANS_TYPE_REVERSAL 
+				&& $this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
+			// calculate the card specific tables VI, MC, DS
+			if (strtoupper($this->card_type) === 'VISA') {
+				if ($this->getMTI() === self::MTI_0100 || // make sure this is an authorization
+						($this->dataExistsForBit(31) && // or host_draft_capture is set
+						$this->getDataForBit(31) == "\x011")) { 
+					$tblVI .= $this->convertDEC2BCD('0002');
+					$tblVI .= 'VI';
+				} else {
+					// this should not generate an exception. If the conditions are 
+					// not met then we just do not include this table
+	//				throw new Exception("Not adding table VI MTI:".$this->getMTI(true).', dataExistsForBit(31):'.$this->dataExistsForBit(31).
+	//						', bit31 data:'.bin2hex($this->getDataForBit(31)).' $tblVI:'.$tblVI);
+				}
+			} else if (strtoupper($this->card_type) == 'MASTER CARD'){
+				if ($this->getMTI() === self::MTI_0100 || // make sure this is an auth message
+						($this->dataExistsForBit(31) && // or host_draft_capture is set
+						$this->getDataForBit(31) === "\x011")) { 
+					$tblMC .= $this->convertDEC2BCD('0002');
+					$tblMC .= 'MC';
+				}
+			} else if (strtoupper($this->card_type) === 'DISCOVER' ||
+					strtoupper($this->card_type) === 'JCB' ||
+					strtoupper($this->card_type) === 'DINERS CLUB') {
+				if ($this->getMTI() == self::MTI_0100 || // make sure this is an auth message
+						($this->dataExistsForBit(31) && // or host_draft_capture is set
+						$this->getDataForBit(31) === "\x011")) { 
+					$tblDS .= $this->convertDEC2BCD('0002');
+					$tblDS .= 'DS';
+				}
+
 			} else {
-				// this should not generate an exception. If the conditions are 
-				// not met then we just do not include this table
-//				throw new Exception("Not adding table VI MTI:".$this->getMTI(true).', dataExistsForBit(31):'.$this->dataExistsForBit(31).
-//						', bit31 data:'.bin2hex($this->getDataForBit(31)).' $tblVI:'.$tblVI);
+				//throw new Exception('Unknown card type:'.$this->card_type.' card number:'.$this->);
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Pri acct number ('.$this->_pri_acct_no.') has unknown card type:'.$this->card_type);
 			}
-		} else if (strtoupper($this->card_type) == 'MASTER CARD'){
-			if ($this->getMTI() === self::MTI_0100 || // make sure this is an auth message
-					($this->dataExistsForBit(31) && // or host_draft_capture is set
-					$this->getDataForBit(31) === "\x011")) { 
-				$tblMC .= $this->convertDEC2BCD('0002');
-				$tblMC .= 'MC';
-			}
-		} else if (strtoupper($this->card_type) === 'DISCOVER' ||
-				strtoupper($this->card_type) === 'JCB' ||
-				strtoupper($this->card_type) === 'DINERS CLUB') {
-			if ($this->getMTI() == self::MTI_0100 || // make sure this is an auth message
-					($this->dataExistsForBit(31) && // or host_draft_capture is set
-					$this->getDataForBit(31) === "\x011")) { 
-				$tblDS .= $this->convertDEC2BCD('0002');
-				$tblDS .= 'DS';
-			}
-			
 		} else {
-			//throw new Exception('Unknown card type:'.$this->card_type.' card number:'.$this->);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Not adding card specific tables. Trans_type:'.$this->_trans_type);
 		}
 
 		// combine all our bitmap 63 data
@@ -528,15 +571,15 @@ class ISO8583Trans extends ISO8583{
 			array('validation_code', 4, ' '),
 			array('mkt_specific_data_ind', 1, ' '),
 			array('rps', 1, ' '),
-			array('first_auth_amount', 12, '0'),
-			array('total_auth_amount', 12, '0')
+			array('first_auth_amount', 12, '0', STR_PAD_LEFT),
+			array('total_auth_amount', 12, '0', STR_PAD_LEFT)
 		);
 		$tbl14_visa = $this->_calculateBit63Table14MsgString('table14_visa', $tbl14_fields);
 		return $tbl14_visa;
 	}
 	
 	private function _calculateBit63Table14MC(){
-		// $tbl14_fields is a map of each field name, length, and fill character
+		// $tbl14_fields is a map of each field name, length, fill character, pad
 		$tbl14_fields = array(
 			array('aci'						,	1,	'Y'),
 			array('banknet_date'			,	4,	' '),
@@ -548,7 +591,7 @@ class ISO8583Trans extends ISO8583{
 			array('filler2'					,	1,	' '),
 			array('mkt_specific_data_ind'	,	1,	' '),
 			array('filler3'					,	13,	' '),
-			array('total_auth_amount'		,	12,	'0') //,
+			array('total_auth_amount'		,	12,	'0', STR_PAD_LEFT) //,
 			//array('addtl_mc_settle_date'	,	4,	' '),
 			//array('addtl_banknet_mc_ref'	,	9,	' ')
 		);
@@ -581,7 +624,7 @@ class ISO8583Trans extends ISO8583{
 			array('issuer_trans_id'			,	15,	' '),
 			array('filler'					,	6,	' '),
 			array('filler2'					,	12,	'0'),
-			array('total_auth_amount'		,	12,	'0')
+			array('total_auth_amount'		,	12,	'0', STR_PAD_LEFT)
 		);
 		
 		$tbl14_ds = $this->_calculateBit63Table14MsgString('table14_ds', $tbl14_fields);
@@ -608,12 +651,14 @@ class ISO8583Trans extends ISO8583{
 			// field[0] = field_name in db
 			// field[1] = length to pad to
 			// field[2] = pad character
+			// field[3] = pad direction (if given)
 			foreach($tbl14_fields as $field) {
 				if ($this->getMTI() == self::MTI_0100) {
 					$$field[0] = str_pad('',$field[1],$field[2]);
 				} else {
 					if (strlen($tbl14_row[$field[0]]) < $field[1]){
-						$$field[0] = str_pad($tbl14_row[$field[0]], $field[1], $field[2]);
+						$str_pad = (array_key_exists(3,$field)) ? $field[3]:STR_PAD_RIGHT;
+						$$field[0] = str_pad($tbl14_row[$field[0]], $field[1], $field[2], $str_pad);
 					} else	if (strlen($tbl14_row[$field[0]]) == $field[1]) {
 						$$field[0] = $tbl14_row[$field[0]];
 					} else {
