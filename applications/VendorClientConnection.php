@@ -14,12 +14,28 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public $eventHandlers = array();
 	/**
-	 * Flag used to signal the discarding of received data. This is usefule when
-	 * trying to test the automatic timeout reversal process. For production use
-	 * this should be false.
+	 * Flag used to signal the discarding of received data. This is useful when
+	 * testing. For production use this should be false.
 	 * @var Bool
 	 */
 	public $discardResponses = false;
+	/**
+	 * Flag to indicate if response packets should be held for testing. For 
+	 * production this should be false.
+	 * @var Bool
+	 */
+	public $holdResponses = false;
+	/**
+	 * The number of packets to hold before flooding them in at once. This is
+	 * for testing only and is ignored if $holdResponses is false.
+	 * @var Int
+	 */
+	public $holdFloodCount = 4;
+	/**
+	 * Holds packets held during testing of auto reversal due to timeout
+	 * @var Array[]
+	 */
+	public $heldPackets = array();
 	/**
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
@@ -163,8 +179,18 @@ class VendorClientConnection extends NetworkClientConnection {
 			return;
 		}
 		if ($this->discardResponses) {
+			if ($this->discard_count)
 			Vendor::logger(Vendor::LOG_LEVEL_EMERGENCY, __METHOD__.':'.__LINE__.' Not processing received data to test auto reversal');
-		} else {
+		} else if($this->holdResponses){
+			Vendor::logger(Vendor::LOG_LEVEL_EMERGENCY, __METHOD__.':'.__LINE__.' Holding packets to simulate link problems');
+			$this->heldPackets[] = binarySubstr($this->buf, $pkt_start, $pkt_size);
+			if (count($this->heldPackets) >= $this->holdFloodCount) {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Flooding '.count($this->heldPackets).' packets for testing');
+				while(count($this->heldPackets) > 0) {
+					$this->event('data_recvd', array_shift($this->heldPackets));
+				}
+			}
+		}else {
 			$this->event('data_recvd', binarySubstr($this->buf, $pkt_start, $pkt_size));
 		}
 		$this->buf = binarySubstr($this->buf, $pkt_start + $pkt_size);
