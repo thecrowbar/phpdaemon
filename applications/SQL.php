@@ -39,12 +39,38 @@ class SQL {
 	 */
 	public static function buildQueryForOriginalTrans($msg, $app) {
 		// build our query to retrieve the original request data from the DB
+		// the retrieval_reference_number value from followup messages will
+		// match exactly the first 0100 auth message not the DB id of this transaction
+		switch($msg->getMTI(true)) {
+			case "0110":
+				$msg_type = '0100';
+				break;
+			case "0210":
+				$msg_type = '0200';
+				break;
+			case "0410":
+				$msg_type = '0400';
+				break;
+			default:
+				$msg_type = '%';
+				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unknown MTI:'.$msg->getMTI(true));
+		}
+		
+		// we may have more than one response with MTI 0410. This is caused by 
+		// us sending several timeout reversal transactions and then getting all 
+		// responses back at once
+		// We violate the spec by sending different bit 12/13 for each 0400 
+		// timeout reversal. This is needed to match the response to the correct
 		$query = "SELECT fdt.*, ti.terminal_id, mi.mid AS mercant_id
 				FROM fd_trans fdt
 				LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
 				LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
-				WHERE fdt.id = '{$msg->retrieval_reference_number}' 
-					AND ti.terminal_id = '{$msg->terminal_id}'";
+				WHERE (fdt.id = {$msg->retrieval_reference_number} 
+						OR master_trans_id = {$msg->retrieval_reference_number})
+					AND fdt.msg_type LIKE '{$msg_type}'
+					AND ti.terminal_id = {$msg->terminal_id}
+					ORDER BY create_dt DESC
+					LIMIT 1";
 		
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Query for original trans:'.$query);
 		return $query;
@@ -62,15 +88,23 @@ class SQL {
 		switch($trans_row['cc_type']) {
 			case 'VS':
 				// Visa queries
+				// for 0400 Reversal messages, the amount from the original 0100
+				// transaction is the value that needs to be in the first_auth_amount
+				// and total_aut_amount fields. If we did incremental auth then
+				// we would need to support different values in each.
+				$auth_amount = $trans_row['trans_amount'] * 100;
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Visa Reversal auth amount:'.$auth_amount.', trans_amount:'.$trans_row['trans_amount']);
 				$queries[] = "INSERT INTO table14_visa (trans_id, aci, issuer_trans_id,
 					validation_code, mkt_specific_data_ind, rps, 
 					first_auth_amount, total_auth_amount)
 					VALUES({$new_trans_id}, '{$trans_row['aci']}', '{$trans_row['issuer_trans_id']}',
 					'{$trans_row['validation_code']}', '{$trans_row['mkt_specific_data_ind']}', '{$trans_row['rps']}',
-					'{$trans_row['first_auth_amount']}', '{$trans_row['total_auth_amount']}')";
+					'{$auth_amount}', '{$auth_amount}')";
 				break;
 			case 'MC':
 				// MasterCard queries
+				$auth_amount = $trans_row['trans_amount'] * 100;
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'MC Reversal auth amount:'.$auth_amount.', trans_amount:'.$trans_row['trans_amount']);
 				$queries[] = "INSERT INTO table14_mc
 					(trans_id, aci, banknet_date,
 					banknet_reference, filler, cvc_error_code,
@@ -78,16 +112,18 @@ class SQL {
 					addtl_banknet_mc_ref)
 					VALUES({$new_trans_id}, '{$trans_row['aci']}', '{$trans_row['banknet_date']}',
 					'{$trans_row['banknet_reference']}', ' ', '{$trans_row['cvc_error_code']}',
-					'{$trans_row['pos_entry_mode_change']}', '{$trans_row['total_auth_amount']}', '{$trans_row['addtl_mc_settle_date']}',
+					'{$trans_row['pos_entry_mode_change']}', '{$auth_amount}', '{$trans_row['addtl_mc_settle_date']}',
 					'{$trans_row['addtl_banknet_mc_ref']}')";
 				break;
 			case 'DS':
 				// Discover, JCB, Diners, Chain UnionPay queries
+				$auth_amount = $trans_row['trans_amount'] * 100;
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Discover Reversal auth amount:'.$auth_amount.', trans_amount:'.$trans_row['trans_amount']);
 				$queries[] = "INSERT INTO table14_ds 
 					(trans_id, di, issuer_trans_id,
 					total_auth_amount)
 					VALUES ({$new_trans_id}, '{$trans_row['di']}', '{$trans_row['issuer_trans_id']}',
-					'{$trans_row['total_auth_amount']}')";
+					'{$auth_amount}')";
 				break;
 			case 'AX':
 				// AmericanExpress queries
@@ -103,10 +139,10 @@ class SQL {
 		}
 		
 		// add a query for the reversal log table; do not add for timeout reversal
-		if ($trans_row['trans_type'] === ISO8583Trans::TRANS_TYPE_REVERSAL) {
+		//if ($trans_row['trans_type'] === ISO8583Trans::TRANS_TYPE_REVERSAL) {
 			$queries[] = "INSERT INTO full_auth_reversal (original_id, reversal_id)
 				VALUES({$trans_row['id']}, {$new_trans_id})";
-		}
+		//}
 		
 		return $queries;
 	}
@@ -122,12 +158,13 @@ class SQL {
 		// Eileen from FD stated in her email from 4-16 that for full auth reversal
 		// the value should be 009000. The spec lists that as Debit reversal
 		// Credit reversal is listed as 000000
+		// The Receipt Number on a 0400 reversal should match the 0100 message
 		$q = "INSERT INTO fd_trans 
 			(trans_type, terminal_id, customer_site_id,
 			user_name, sale_site_id, sx_order_number,
 			msg_type, pri_acct_no, cc_last_four,
 			cc_type, processing_code, trans_amount,
-			receipt_number,
+			receipt_number, master_trans_id, 
 			trans_dt, cc_exp, pos_entry_pin, retrieval_reference_num,
 			auth_iden_response, response_code, avs_response,
 			avs_data, response_text, table49_response)
@@ -135,7 +172,7 @@ class SQL {
 			'{$t['user_name']}', '{$t['sale_site_id']}', '{$t['sx_order_number']}',
 			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
 			'{$t['cc_type']}', '000000', '{$t['trans_amount']}',
-			'{$t['receipt_number']}',
+			'{$t['receipt_number']}', {$t['id']},
 			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}', '{$t['retrieval_reference_num']}', 
 			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
 			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}')
@@ -341,67 +378,70 @@ class SQL {
 		
 		// <editor-fold defaultstate="collapsed" desc="Table14 Card Specific Queries">
 		// now create query specific to card type based on table14
-		switch($msg->card_type) {
-			case 'Visa' :
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_visa 
-						(trans_id, aci, issuer_trans_id, 
-						validation_code, mkt_specific_data_ind, rps, 
-						first_auth_amount, total_auth_amount)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['issuer_trans_id']}',
-						'{$tbl14['validation_code']}','{$tbl14['mkt_specific_data_ind']}','{$tbl14['rps']}',
-						'{$tbl14['first_auth_amount']}','{$tbl14['total_auth_amount']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Master Card':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_mc
-						(trans_id, aci, banknet_date,
-						banknet_reference, filler, cvc_error_code,
-						pos_entry_mode_change, trans_edit_code_error, filler2,
-						mkt_specific_data_ind, filler3, total_auth_amount,
-						addtl_mc_settle_date, addtl_banknet_mc_ref)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['banknet_date']}', 
-						'{$tbl14['banknet_reference']}', '{$tbl14['filler']}', '{$tbl14['cvc_error_code']}', 
-						'{$tbl14['pos_entry_mode_change']}', '{$tbl14['trans_edit_code_error']}', '{$tbl14['filler2']}', 
-						'{$tbl14['mkt_specific_data_ind']}', '{$tbl14['filler3']}', '{$tbl14['total_auth_amount']}', 
-						'{$tbl14['addtl_mc_settle_date']}', '{$tbl14['addtl_banknet_mc_ref']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'American Express':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_amex
-						(trans_id, aei, issuer_trans_id,
-						filler, pos_data, filler2,
-						seller_id)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['aei']}', '{$tbl14['issuer_trans_id']}', 
-						'{$tbl14['filler']}', '{$tbl14['pos_data']}', '{$tbl14['filler2']}',
-						'{$tbl14['seller_id']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Discover':
-				if ($msg->dataExistsForTable(14)) {
-					$tbl14 = $msg->getParsedBit63Table14();
-					$query = "INSERT INTO table14_ds
-						(trans_id, di, issuer_trans_id,
-						filler, filler2, total_auth_amount)
-						VALUES
-						({$msg->original_trans_id}, '{$tbl14['di']}', '{$tbl14['issuer_trans_id']}', 
-						'{$tbl14['filler']}', '{$tbl14['filler2']}', '{$tbl14['total_auth_amount']}')";
-					$queries[] = $query;
-				}
-				break;
-			default:
-				Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'TODO Write query to update card type:'.$msg->card_type);
+		// 0400 Reversal Messages already have these tables created
+		if ($msg->getMTI(true) !== ISO8583Trans::MTI_0400) {
+			switch($msg->card_type) {
+				case 'Visa' :
+					if ($msg->dataExistsForTable(14)) {
+						$tbl14 = $msg->getParsedBit63Table14();
+						$query = "INSERT INTO table14_visa 
+							(trans_id, aci, issuer_trans_id, 
+							validation_code, mkt_specific_data_ind, rps, 
+							first_auth_amount, total_auth_amount)
+							VALUES
+							({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['issuer_trans_id']}',
+							'{$tbl14['validation_code']}','{$tbl14['mkt_specific_data_ind']}','{$tbl14['rps']}',
+							'{$tbl14['first_auth_amount']}','{$tbl14['total_auth_amount']}')";
+						$queries[] = $query;
+					}
+					break;
+				case 'Master Card':
+					if ($msg->dataExistsForTable(14)) {
+						$tbl14 = $msg->getParsedBit63Table14();
+						$query = "INSERT INTO table14_mc
+							(trans_id, aci, banknet_date,
+							banknet_reference, filler, cvc_error_code,
+							pos_entry_mode_change, trans_edit_code_error, filler2,
+							mkt_specific_data_ind, filler3, total_auth_amount,
+							addtl_mc_settle_date, addtl_banknet_mc_ref)
+							VALUES
+							({$msg->original_trans_id}, '{$tbl14['aci']}', '{$tbl14['banknet_date']}', 
+							'{$tbl14['banknet_reference']}', '{$tbl14['filler']}', '{$tbl14['cvc_error_code']}', 
+							'{$tbl14['pos_entry_mode_change']}', '{$tbl14['trans_edit_code_error']}', '{$tbl14['filler2']}', 
+							'{$tbl14['mkt_specific_data_ind']}', '{$tbl14['filler3']}', '{$tbl14['total_auth_amount']}', 
+							'{$tbl14['addtl_mc_settle_date']}', '{$tbl14['addtl_banknet_mc_ref']}')";
+						$queries[] = $query;
+					}
+					break;
+				case 'American Express':
+					if ($msg->dataExistsForTable(14)) {
+						$tbl14 = $msg->getParsedBit63Table14();
+						$query = "INSERT INTO table14_amex
+							(trans_id, aei, issuer_trans_id,
+							filler, pos_data, filler2,
+							seller_id)
+							VALUES
+							({$msg->original_trans_id}, '{$tbl14['aei']}', '{$tbl14['issuer_trans_id']}', 
+							'{$tbl14['filler']}', '{$tbl14['pos_data']}', '{$tbl14['filler2']}',
+							'{$tbl14['seller_id']}')";
+						$queries[] = $query;
+					}
+					break;
+				case 'Discover':
+					if ($msg->dataExistsForTable(14)) {
+						$tbl14 = $msg->getParsedBit63Table14();
+						$query = "INSERT INTO table14_ds
+							(trans_id, di, issuer_trans_id,
+							filler, filler2, total_auth_amount)
+							VALUES
+							({$msg->original_trans_id}, '{$tbl14['di']}', '{$tbl14['issuer_trans_id']}', 
+							'{$tbl14['filler']}', '{$tbl14['filler2']}', '{$tbl14['total_auth_amount']}')";
+						$queries[] = $query;
+					}
+					break;
+				default:
+					Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'TODO Write query to update card type:'.$msg->card_type);
+			}
 		}
 		//</editor-fold>
 		
@@ -492,6 +532,20 @@ class SQL {
 			FROM fd_trans fdt
 			WHERE id > {$min_trans_id}
 				AND create_dt > '{$after_date}'";
+		return $q;
+	}
+	
+	/**
+	 * findReversalTransQuery
+	 * @param Int $id - DB record ID of the trans to check for reversal
+	 * @return string - the query to execute
+	 */
+	public static function findReversalTransQuery($id){
+		$q = "SELECT fdt.id 
+				FROM fd_trans fdt
+				LEFT JOIN trans_type_list ttl ON ttl.type_id = fdt.trans_type
+				WHERE ttl.type_name = 'TIMEOUT_REVERSAL'
+					AND fdt.master_trans_id = {$id}";
 		return $q;
 	}
 }
