@@ -185,10 +185,12 @@ class VendorClientConnection extends NetworkClientConnection {
 			Vendor::logger(Vendor::LOG_LEVEL_EMERGENCY, __METHOD__.':'.__LINE__.' Holding packets to simulate link problems');
 			$this->heldPackets[] = binarySubstr($this->buf, $pkt_start, $pkt_size);
 			if (count($this->heldPackets) >= $this->holdFloodCount) {
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Flooding '.count($this->heldPackets).' packets for testing');
-				while(count($this->heldPackets) > 0) {
-					$this->event('data_recvd', array_shift($this->heldPackets));
-				}
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Sending last packet out of  '.count($this->heldPackets).' packets for testing');
+//				while(count($this->heldPackets) > 0) {
+//					$this->event('data_recvd', array_shift($this->heldPackets));
+//				}
+				$this->event('data_recvd', array_pop($this->heldPackets));
+				$this->heldPackets = array();
 			}
 		}else {
 			$this->event('data_recvd', binarySubstr($this->buf, $pkt_start, $pkt_size));
