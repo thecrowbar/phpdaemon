@@ -25,12 +25,6 @@ class RealTimeTrans extends Vendor{
 	public $terminals;
 	
 	/**
-	 * Requests that are waiting on responses from FD
-	 * @var Array[]
-	 */
-	public $pending_requests = array();
-	
-	/**
 	 * Saves the Request object callback timer. This is mainly for testing
 	 * @var Timer
 	 */
@@ -171,8 +165,8 @@ class RealTimeTrans extends Vendor{
 						if (array_key_exists($transID, $app->pending_requests) && is_object($app->pending_requests[$transID])) {
 							Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Found our request object for transID:'.$transID);
 							$req = $app->pending_requests[$transID];
-							$this->pending_req_timer = setTimeout(function($timer) use($req, $msg) {
-								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' timer callback firing');
+							$this->pending_req_timer = setTimeout(function($timer) use($req, $msg, $transID) {
+								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' timer with ID: '.$transID.'callback firing');
 								//$app->checkOutboundQueue($app);
 								$req->job->setResult('trans_msg', $msg);
 								$req->wakeup();
