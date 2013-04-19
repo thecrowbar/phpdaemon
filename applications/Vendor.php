@@ -48,7 +48,7 @@ class Vendor extends AppInstance{
 	 * Log Messages at or below this level will be sent to the phpd log
 	 * @var Int
 	 */
-	public static $log_level = self::LOG_LEVEL_INFO;
+	public static $log_level = self::LOG_LEVEL_DEBUG;
 	
 	public static $log_tcp_stream = true;
 	

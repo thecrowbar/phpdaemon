@@ -124,9 +124,9 @@ class RealTimeTrans extends Vendor{
 						$msg->master_trans_id = (int)$sr['master_trans_id'];
 						$cancel_timer_id = ($msg->master_trans_id === -1) ? $msg->original_trans_id:$msg->master_trans_id;
 						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' About to cancel reversal timer for transID:'.$cancel_timer_id);
-						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->original_trans_id:'.$msg->original_trans_id);
-						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->master_trans_id:'.$msg->master_trans_id);
-						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->retrieval_reference_number:'.$msg->retrieval_reference_number);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $msg->original_trans_id:'.$msg->original_trans_id);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $msg->master_trans_id:'.$msg->master_trans_id);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $msg->retrieval_reference_number:'.$msg->retrieval_reference_number);
 						//Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.':'.__LINE__.' $sr:'.print_r($sr, true));
 						$app->clearAutoReversalTimer($cancel_timer_id);
 						$msg->original_trans_amount = $sr['trans_amount'];
