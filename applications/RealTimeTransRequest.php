@@ -337,16 +337,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		$track2 = $req->req_params['track2'];
 		$cvc = $req->req_params['cvc'];
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$app is of type:'.get_class($app).' in '.__METHOD__);
-		$app->createISOandSend($app, $req, $id, $track2, $cvc, function() use($app, $req, $id){
-			if ($app->auto_reversal_timeout > 0) {
-				// add a timer to setup the auto_reversal transactions
-				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding an auto-reversal timer for transID:'.$id);
-				$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $req, $id){
-					Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Auto reversal timer fired for transID:'.$id);
-					$req->createReversalTransJob($id, ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL);
-				}, 1e6 * $app->auto_reversal_timeout);
-			}
-		});
+		$app->createISOandSend($app, $req, $id, $track2, $cvc);
 	}
 	
 	/**
@@ -388,6 +379,7 @@ class RealTimeTransRequest extends HTTPRequest{
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal trans original receipt_number:'.$orig_tr['receipt_number']);
 			$q = SQL::buildQueryForReversal($result[0], $type);
 			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
