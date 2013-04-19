@@ -270,7 +270,8 @@ class ISO8583Trans extends ISO8583{
 		// bit 39 is the response code; submitted only on reversal
 		if ($this->_trans_type === self::TRANS_TYPE_REVERSAL) {
 			$this->addData(38, $this->_trans_row['auth_iden_response']);
-			$this->addData(39, $this->_trans_row['response_code']);
+			// 2013-04-19 per Manana bit39 is not included in FULL AUTH REVERSAL
+			//$this->addData(39, $this->_trans_row['response_code']);
 		}
 		
 		
@@ -419,7 +420,8 @@ class ISO8583Trans extends ISO8583{
 				// the order number is sale site_id * 10,000,000 + sx order_number
 				// Spec says 15 bytes, but Eileen (Sr Cert Specialist) stated that only 12 bytes
 				// will appear on cust account
-				$order_num = substr($this->_trans_row['sale_site_id'].'-'.$this->_trans_row['sx_order_number'],0,12);
+				// 2013-04-19 The order number can contain only A-Z0-9 characters
+				$order_num = substr($this->_trans_row['sale_site_id'].$this->_trans_row['sx_order_number'],0,12);
 				$tbl36 .= str_pad($order_num, 12, ' ', STR_PAD_RIGHT);
 			}
 				//$tbl36 .= strpad($this->_trans_row['id'], 15, ' ', STR_PAD_LEFT);
