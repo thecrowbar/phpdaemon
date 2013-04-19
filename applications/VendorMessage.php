@@ -5,6 +5,10 @@
  * @author jcrow
  */
 class VendorMessage {
+	/**
+	 * The object that creates and validates a TCP message
+	 * @var ISO8583Trans
+	 */
 	public $ISO8583;
 	
 	/**
