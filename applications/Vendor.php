@@ -165,6 +165,12 @@ class Vendor extends AppInstance{
 	public $qfile;
 	
 	/**
+	 * Requests that are waiting on responses from FD
+	 * @var Array[]
+	 */
+	public $pending_requests = array();
+	
+	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
 	 * Uncomment and return array with your default options
@@ -221,7 +227,7 @@ class Vendor extends AppInstance{
 			if ($this->qfile === false) {
 				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unable to open the query log file!');
 			}else {
-				fwrite($this->qfile, __CLASS__.' starting up at '.date('Y-m-d H:i:s'));
+				fwrite($this->qfile, __CLASS__.' starting up at '.date('Y-m-d H:i:s')."\n\n");
 			}
 		}
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
@@ -422,13 +428,17 @@ class Vendor extends AppInstance{
 		if (is_object($req)) {
 			$app->pending_requests[$id] = $req;
 		}
-		$app->createJobFromQuery($app, $req, 'new_iso', SQL::singleTransDetailQuery($id), false,
+		$q = SQL::singleTransDetailQuery($id);
+		$app->createJobFromQuery($app, $req, 'new_iso', $q, false,
 				function($result) use($app, $req, $track2, $cvc, $cb){
 			// first check if this transaction was already submitted
 			if (is_array($result)) {
 				// check the submit_dt field
-				if ($result[0]['submit_dt'] !== '0000-00-00 00:00:00') {
-					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Transaction '.$result[0]['id'].' was submitted to FD on '.$result[0]['submit_dt'].'!');
+				// if this is a 0400 TIMEOUT_REVERSAL message we can send the same
+				// message multiple times
+				if ((int)$result[0]['trans_type'] !== ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL 
+						&& $result[0]['submit_dt'] !== '0000-00-00 00:00:00') {
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Transaction ('.$result[0]['id'].') of type ('.$result[0]['trans_type'].') was submitted to FD on '.$result[0]['submit_dt'].'!');
 				} else {
 					// update the submit_dt field for this transaction
 					$q = SQL::updateSubmitDTQuery($result[0]['id']);
@@ -447,7 +457,19 @@ class Vendor extends AppInstance{
 							Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Failed to update the submit_dt value for transaction:'.$tr['id'].', error:'.$sql->errmsg);
 						} else {
 							try {
-								$app->vendorMessage = new VendorMessage($tr);
+								$msg = new VendorMessage($tr);
+								
+								// if this is an original auth request, then 
+								// we must start an auto reversal timer
+								if ($msg->ISO8583->master_trans_id === -1 
+										&& $msg->ISO8583->_trans_type === ISO8583Trans::TRANS_TYPE_RETAIL) {
+									// this is the first auth message start our timer
+									// the timer will call itself everytime it expires
+									// and keep doing that until it receives a response
+									$app->createAutoReversalTimer($app, $msg->ISO8583->_trans_id);
+									
+								}
+								$app->vendorMessage = $msg;
 								// send our iso
 								// add the message to our queue
 								$app->tq->enqueue($app->vendorMessage);
@@ -473,57 +495,189 @@ class Vendor extends AppInstance{
 		}); // end of outer createJobFromQuery
 	}
 	
+	/**
+	 * createAutoReversalTimer() - create a timer to submit an automatic reversal
+	 * if no response is received
+	 * @param Vendor $app - the main appInstance
+	 * @param int $id - the original transaction ID from the DB (Bit 37 value)
+	 */
+	public function createAutoReversalTimer($app, $id){
+		// clear any existing timer for this trans id
+		$app->clearAutoReversalTimer($id);
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding an auto-reversal timer for transID:'.$id);
+		$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $id){
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Auto reversal timer fired for transID:'.$id);
+			//$app->createAutoReversalTrans($id);
+			$app->checkForReversalTrans($id);
+			$app->createAutoReversalTimer($app, $id);
+		}, 1e6 * $app->auto_reversal_timeout);
+	}
+
+	/**
+	 * checkForReversalTRans() - find if the given transID has a timeout reversa
+	 * transaction already created; resend if found; create and send if not found
+	 * @param Int $id - the DB record of the trans to check for a reversal
+	 * @return null
+	 */
+	public function checkForReversalTrans($id){
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' $id:'.print_r($id, true));
+		$app = $this;
+		// find our $req from the $app->pending_requests array
+		if (array_key_exists($id, $app->pending_requests)) {
+			$req = $this->pending_requests[$id];
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, ' Unable to find the $req object for transID:'.$id);
+			return;
+		}
+		$q = SQL::findReversalTransQuery($id);
+		$app->createJobFromQuery($app, $req, 'check_for_reversal_trans', $q, false, 
+				function($result, $q) use($app, $req, $id){
+			// check if we have a reversal trans; if so, we use its id to send
+			// the next message. If not, we create a new reversal trans record
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' $q:'.print_r($q, true));
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' $result:'.print_r($result, true));
+			if (count($result) > 0) {
+				$reversal_id = $result[0]['id'];
+				// we found our existing reversal transaction; submit it again
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, ' Attempting to send transaction with ID:'.$reversal_id);
+				$app->createISOandSend($app, $req, $reversal_id);
+			} else {
+				// we need to create a new reversal transaction
+				$app->createAutoReversalTrans($id, $req);
+			}
+		});
+	}
 	
-//	/**
-//	 * Flush out a complete ISO8583Trans object from the returned message data
-//	 * @param ISO8583Trans $msg - the empty ISO8583 trans object
-//	 * @param Array $sr - the DB record from the original transaction.
-//	 * @return ISO8583Trans
-//	 * @throws Exception
-//	 */
-//	public function createResponseMsg($msg, $sr){
-//		// add data from the original trans into our new object
-//		try{
-//			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
-//			$msg->original_trans_id = $sr['id'];
-//			$msg->original_trans_amount = $sr['trans_amount'];
-//			if (self::$decrypt_data) {
-//				$data = self::decrypt_data($sr['pri_acct_no']);
-//				if (is_array($data)){
-//					throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
-//				}else {
-//					// save our encrypted account number
-//					$msg->encrypted_acct_no = $sr['pri_acct_no'];
-//					$msg->pri_acct_no = $data;
-//					$msg->credit_card = new CreditCard($msg->pri_acct_no);
-//					$msg->card_type = $msg->credit_card->card_type;
-//				}
-//			} else {
-//				// pull the card type from the original trans query data
-//				switch($sr['cc_type']) {
-//					case 'VS':
-//						$msg->card_type = 'Visa';
-//						break;
-//					case 'MC':
-//						$msg->card_type = 'Master Card';
-//						break;
-//					case 'AX':
-//						$msg->card_type = 'American Express';
-//						break;
-//					case 'DS':
-//						$msg->card_type = 'Discover';
-//						break;
-//					default:
-//						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$sr['user_name']}, has unknown card type: {$sr['cc_type']}");
-//				}
-//			}
-//
-//			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
-//		}catch(Exception $e){
-//			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
-//		}
-//		return $msg;
-//	}
+	/**
+	 * createReversalTransJob() - pull info on a transaction and create a new
+	 * transaction to reverse it
+	 * @param int $id - DB record id of the id we will reverse
+	 * @param HTTPRequest $req - The HTTP Request associated with this transaction
+	 */
+	public function createAutoReversalTrans($id, $req) {
+		$app = $this;
+		$q = SQL::singleTransDetailQuery($id);
+		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req){
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
+			$orig_tr = $result[0];
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal trans original receipt_number:'.$orig_tr['receipt_number']);
+			$q = SQL::buildQueryForReversal($result[0], ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL);
+			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
+				// get our queries to fill the extra tables
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
+				$queries = SQL::buildQueriesForReversal($orig_tr, $result, $app);
+
+				// execute our queries
+				while(count($queries) > 0){
+					$q = array_shift($queries);
+					$app->executeQuery($app, $q);
+				}
+
+				// create our ISO8583 and send it
+				$app->createISOandSend($app, $req, $result);
+			});
+		});
+	}
+	
+	/**
+	 * createJobFromQuery() - execute the given query and store the results in
+	 * the request->job with given name
+	 * @param RealTimeTrans $app - the main appInstance to get the MySQL Conn from
+	 * @param RealTimeTransRequest $req - the HTTP Request we are working with
+	 * @param String $job_name - name of the job to store the results in
+	 * @param String $q - query to execute on the DB
+	 * @param Bool $wake - should we wake our $req when this job completes
+	 * @param Callable $cb - any extra function that should execute when this job completes
+	 * @return null
+	 */
+	public function createJobFromQuery($app, $req, $job_name, $q, $wake, $cb = null){
+		// if our $req is null, then we just log an error; if $req is an int
+		// then we search for the $req object in $app->pending_requests
+		if ($req === null){
+			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, __METHOD__.' $req object is null!');
+			return;
+		}
+		$job = $req->job;
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
+		$job_result = $req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
+			// get our sql connection
+			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
+				if (!$success) {
+					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
+				}
+				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
+					// check if we should log all queries
+					if ($app::$log_queries) {
+						fwrite($app->qfile, $q."\n\n");
+					}
+					if (!$success) {
+						Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'executing query:'.$q.', error:'.$sql->errmsg);
+						return $job->setResult($name, 'ERROR with Query! Query:'.$q.', error:'.$sql->errmsg);
+					} 
+					
+					// create a $result variable. We set it to real values if our query succeeds
+					$result = '';
+					
+					// evaluate whether we have an INSERT or SELECT query
+					// set our $result based on the query type
+					$qtype = substr($q,0,strpos($q, ' '));
+					switch(trim(strtoupper($qtype))){
+						case 'INSERT':
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the insertId value for job('.$name.') result!');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
+							$result = $sql->insertId;
+							break;
+						case 'SELECT':
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the resultRows value for job('.$name.') result!');
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' result contains '.count($sql->resultRows). ' entries');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
+							$result = $sql->resultRows;
+							break;
+						case 'UPDATE':
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the affectedRows value for job('.$name.') result!');
+							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
+							$result = $sql->affectedRows;
+							break;
+						default:
+							Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unknown query type:'.$qtype);
+							$result = $sql->errmsg;
+					}
+
+					// call any callback and pass it the $result from this job
+					if(is_callable($cb)) {
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' About to call_user_func() and pass $result'); //:'.print_r($result, true));
+						call_user_func($cb, $result, $q);
+					}
+					
+					// we only set a result for this job if told to wake the request
+					// this prevents the request from waking before all queries have
+					// completed
+					if ($wake) {
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to call $req->wakeup()!');
+						$job->setResult($name, $result);
+						$req->wakeup();
+					}
+				});
+			}); // end of sql->getConnection callback
+			
+			
+			
+		}); // end of job callback
+		
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'addJob('.$job_name.') result:'.$job_result);
+		if($job_result === false) {
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Job('.$job_name.') returned false! Retrying with updated name');
+			$app->createJobFromQuery($app, $req, $job_name.'2', $q, $wake, $cb);
+		} else {
+			//  if not set to wake the request, execute our job immediately
+			if (!$wake){
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
+				$job();
+			}
+		}
+	}
 	
 	/**
 	 * updateClientWS() - send an update to the remote client over websocket
@@ -567,7 +721,7 @@ class Vendor extends AppInstance{
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in '.__METHOD__);
 			}
 			if (self::$log_queries && $app->qfile !== false) {
-				fwrite($app->qfile, "$query\n");
+				fwrite($app->qfile, "$query\n\n");
 			}
 
 			// execute a query on our sql object
@@ -709,99 +863,6 @@ class Vendor extends AppInstance{
 		
 		// run our job to actually connect to MySQL and execute the query
 		$job();
-	}
-	
-	/**
-	 * createJobFromQuery() - execute the given query and store the results in
-	 * the request->job with given name
-	 * @param RealTimeTrans $app - the main appInstance to get the MySQL Conn from
-	 * @param RealTimeTransRequest $req - the HTTP Request we are working with
-	 * @param String $job_name - name of the job to store the results in
-	 * @param String $q - query to execute on the DB
-	 * @param Bool $wake - should we wake our $req when this job completes
-	 * @param Callable $cb - any extra function that should execute when this job completes
-	 * @return null
-	 */
-	public function createJobFromQuery($app, $req, $job_name, $q, $wake, $cb = null){
-		$job = $req->job;
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
-		$job_result = $req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
-			// get our sql connection
-			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
-				if (!$success) {
-					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
-				}
-				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
-					// check if we should log all queries
-					if ($app::$log_queries) {
-						fwrite($app->qfile, $q);
-					}
-					if (!$success) {
-						Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'executing query:'.$q.', error:'.$sql->errmsg);
-						return $job->setResult($name, 'ERROR with Query! Query:'.$q.', error:'.$sql->errmsg);
-					} 
-					
-					// create a $result variable. We set it to real values if our query succeeds
-					$result = '';
-					
-					// evaluate whether we have an INSERT or SELECT query
-					// set our $result based on the query type
-					$qtype = substr($q,0,strpos($q, ' '));
-					switch(trim(strtoupper($qtype))){
-						case 'INSERT':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the insertId value for job('.$name.') result!');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
-							$result = $sql->insertId;
-							break;
-						case 'SELECT':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the resultRows value for job('.$name.') result!');
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' result contains '.count($sql->resultRows). ' entries');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
-							$result = $sql->resultRows;
-							break;
-						case 'UPDATE':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the affectedRows value for job('.$name.') result!');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
-							$result = $sql->affectedRows;
-							break;
-						default:
-							Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unknown query type:'.$qtype);
-							$result = $sql->errmsg;
-					}
-
-					// call any callback and pass it the $result from this job
-					if(is_callable($cb)) {
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call_user_func() and pass $result'); //:'.print_r($result, true));
-						call_user_func($cb, $result);
-					}
-					
-					// we only set a result for this job if told to wake the request
-					// this prevents the request from waking before all queries have
-					// completed
-					if ($wake) {
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to call $req->wakeup()!');
-						$job->setResult($name, $result);
-						$req->wakeup();
-					}
-				});
-			}); // end of sql->getConnection callback
-			
-			
-			
-		}); // end of job callback
-		
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'addJob('.$job_name.') result:'.$job_result);
-		if($job_result === false) {
-			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Job('.$job_name.') returned false! Retrying with updated name');
-			$app->createJobFromQuery($app, $req, $job_name.'2', $q, $wake, $cb);
-		} else {
-			//  if not set to wake the request, execute our job immediately
-			if (!$wake){
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
-				$job();
-			}
-		}
 	}
 	
 	// <editor-fold defaultstate="collapsed" desc="Static Methods">
