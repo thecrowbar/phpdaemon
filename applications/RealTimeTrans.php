@@ -119,9 +119,16 @@ class RealTimeTrans extends Vendor{
 					
 					// add data from the original trans into our new object
 					try{
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$sr['id']);	
-						$msg->original_trans_id = $sr['id'];
-						$app->clearAutoReversalTimer($msg->original_trans_id);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'DB record id:'.$sr['id']);
+						$msg->original_trans_id = (int)$sr['id'];
+						$msg->master_trans_id = (int)$sr['master_trans_id'];
+						$cancel_timer_id = ($msg->master_trans_id === -1) ? $msg->original_trans_id:$msg->master_trans_id;
+						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' About to cancel reversal timer for transID:'.$cancel_timer_id);
+						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->original_trans_id:'.$msg->original_trans_id);
+						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->master_trans_id:'.$msg->master_trans_id);
+						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $msg->retrieval_reference_number:'.$msg->retrieval_reference_number);
+						//Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.':'.__LINE__.' $sr:'.print_r($sr, true));
+						$app->clearAutoReversalTimer($cancel_timer_id);
 						$msg->original_trans_amount = $sr['trans_amount'];
 						if (self::$decrypt_data) {
 							$data = Vendor::decrypt_data($sr['pri_acct_no']);
@@ -223,25 +230,5 @@ class RealTimeTrans extends Vendor{
 			return new RealTimeTransRequest($this, $upstream, $req);
 		}
 	}
-	
-	/**
-	 * clearAutoReversalTimer() - clear an auto reversal timer 
-	 * @param Int $id - the DB record id of the timer to cancel
-	 */
-	public function clearAutoReversalTimer($id) {
-		
-		if (array_key_exists($id, $this->auto_reversal_timers)) {
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Canceling auto reversal timer for transID:'.$id);
-			$this->auto_reversal_timers[$id]->cancel();
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Removing auto reversal timer for transID:'.$id);
-			unset($this->auto_reversal_timers[$id]);
-		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Reversal Timer not found for $id: '.$id.'! timers array contains: '.count($this->auto_reversal_timers).' elements');
-			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Reversal Timers:'.print_r(array_keys($this->auto_reversal_timers), true));
-		}
-	}
-	
-	// </editor-fold>
-	
 }
 ?>

@@ -48,7 +48,7 @@ class Vendor extends AppInstance{
 	 * Log Messages at or below this level will be sent to the phpd log
 	 * @var Int
 	 */
-	public static $log_level = self::LOG_LEVEL_DEBUG;
+	public static $log_level = self::LOG_LEVEL_INFO;
 	
 	public static $log_tcp_stream = true;
 	
@@ -498,11 +498,17 @@ class Vendor extends AppInstance{
 	/**
 	 * createAutoReversalTimer() - create a timer to submit an automatic reversal
 	 * if no response is received
-	 * @param Vendor $app - the main appInstance
+	 * @param RealTimeTrans $app - the main appInstance
 	 * @param int $id - the original transaction ID from the DB (Bit 37 value)
 	 */
 	public function createAutoReversalTimer($app, $id){
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.':'.__LINE__.' We have '.count($app->auto_reversal_timers).' timers currently defined!');
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$pp->auto_reversal_timers:'.print_r($app->auto_reversal_timers, true));
+		foreach($app->auto_reversal_timers as $transID => $timer) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'TransID:'.$transID.' timer id:'.$timer->id."\n\t\ttimer lastTimeout:".$timer->lastTimeout."\n\t\t timer finished:".$timer->finished);
+		}
 		// clear any existing timer for this trans id
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' About to cancel existing timer for ID:'.$id.' and re-create it');
 		$app->clearAutoReversalTimer($id);
 		Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding an auto-reversal timer for transID:'.$id);
 		$app->auto_reversal_timers[$id] = new Timer(function() use ($app, $id){
@@ -511,6 +517,23 @@ class Vendor extends AppInstance{
 			$app->checkForReversalTrans($id);
 			$app->createAutoReversalTimer($app, $id);
 		}, 1e6 * $app->auto_reversal_timeout);
+	}
+	
+	/**
+	 * clearAutoReversalTimer() - clear an auto reversal timer 
+	 * @param Int $id - the DB record id of the timer to cancel
+	 */
+	public function clearAutoReversalTimer($id) {
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' transID:'.$id);
+		if (array_key_exists($id, $this->auto_reversal_timers)) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Canceling auto reversal timer for transID:'.$id);
+			$this->auto_reversal_timers[$id]->cancel();
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Removing auto reversal timer for transID:'.$id);
+			unset($this->auto_reversal_timers[$id]);
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Reversal Timer not found for $id: '.$id.'! timers array contains: '.count($this->auto_reversal_timers).' elements');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal Timers:'.print_r(array_keys($this->auto_reversal_timers), true));
+		}
 	}
 
 	/**
