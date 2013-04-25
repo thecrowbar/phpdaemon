@@ -93,8 +93,8 @@ class Transaction {
 		// add a div for refund and full auth reversal buttons
 		$html .= '<div id="trans_detail_buttons" class="cb"></div>';
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->db_row:'.print_r($this->db_row, true));
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this:'.print_r($this, true));
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'using $elems:'.print_r($this->elems, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this:'.print_r($this, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'using $elems:'.print_r($this->elems, true));
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this is an object of:'.get_class());
 		foreach($this->elems as $row_num=>$vals) {
 			// first check if we have a hidden input element; this is determined by
