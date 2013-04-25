@@ -122,6 +122,7 @@ class RealTimeTrans extends Vendor{
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'DB record id:'.$sr['id']);
 						$msg->original_trans_id = (int)$sr['id'];
 						$msg->master_trans_id = (int)$sr['master_trans_id'];
+						$msg->_trans_type = (int)$sr['trans_type'];
 						$cancel_timer_id = ($msg->master_trans_id === -1) ? $msg->original_trans_id:$msg->master_trans_id;
 						Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' About to cancel reversal timer for transID:'.$cancel_timer_id);
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $msg->original_trans_id:'.$msg->original_trans_id);
