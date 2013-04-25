@@ -531,7 +531,9 @@ class SQL {
 				fdt.table49_response, fdt.refunded
 			FROM fd_trans fdt
 			WHERE id > {$min_trans_id}
-				AND create_dt > '{$after_date}'";
+				AND create_dt > '{$after_date}'
+			ORDER BY create_dt DESC
+			LIMIT 100";
 		return $q;
 	}
 	
