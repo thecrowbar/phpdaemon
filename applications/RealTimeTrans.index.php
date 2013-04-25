@@ -94,16 +94,19 @@
 				$job_name = 'single_batch';
 				break;
 			case 'view_all_trans':
-				$job_name = 'view_trans';
+				$min_trans_id = (array_key_exists('min_trans_id', $req->req_params))?$req->req_params['min_trans_id']:0;
+				$job_name = $min_trans_id.'-view_trans';
 				break;
 			default:
 				$job_name = '';
 		}
 		
+		$job_name = $req->last_job_name;
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, ' using $job_name:'.$job_name);
 		// get our trans array from the job name
-		if (is_array($this->job->getResult($job_name))) {
-			if (count($this->job->getResult($job_name)) > 0 ) {
-				$trans = $this->job->getResult($job_name);
+		if (is_array($app->job->getResult($job_name))) {
+			if (count($app->job->getResult($job_name)) > 0 ) {
+				$trans = $app->job->getResult($job_name);
 			}
 		}
 		

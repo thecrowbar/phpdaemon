@@ -96,12 +96,13 @@
 			0 => array('No Results'=>'No transactions found',
 				'id' => -1)
 		);
-		$job_name = 'trans_detail';
-		
+		//$job_name = 'trans_detail';
+		$job_name = $req->last_job_name;
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, ' using $job_name:'.$job_name);
 		// get our trans array from the job name
-		if (is_array($this->job->getResult($job_name))) {
-			if (count($this->job->getResult($job_name)) > 0 ) {
-				$trans = $this->job->getResult($job_name);
+		if (is_array($app->job->getResult($job_name))) {
+			if (count($app->job->getResult($job_name)) > 0 ) {
+				$trans = $app->job->getResult($job_name);
 			}
 		}
 		
