@@ -171,6 +171,12 @@ class Vendor extends AppInstance{
 	public $pending_requests = array();
 	
 	/**
+	 * ComplexJob to store and run our jobs
+	 * @var ComplexJob
+	 */
+	public $job;
+	
+	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
 	 * Uncomment and return array with your default options
@@ -252,6 +258,9 @@ class Vendor extends AppInstance{
 		WebSocketServer::getInstance()->addRoute($this->WebSocketRoute, function ($client) use ($appInstance) {
 			return new VendorWebSocketRoute($client, $appInstance);
 		});
+		
+		// create a ComplexJob object to store and run our saved jobs
+		$this->job = new ComplexJob();
 		
 //		// start a timer to check the outbound queue every 90 seconds
 //		$app = $this;
@@ -385,7 +394,8 @@ class Vendor extends AppInstance{
 			// we first get the DB record id of the transaction and then update
 			// several tables with data from the response
 			$q = SQL::buildQueryForOriginalTrans($msg, $app);
-			$app->createJobFromQuery($app, null, 'trans_orig_rec', $q, false, 
+			$id = $msg->original_trans_id;
+			$app->createJobFromQuery($app, null, $id.'-trans_orig_rec', $q, false, 
 					function($result)use($app, $req, $job, $name, $msg){
 				// process our response into a complete ISO8585 msg
 				$msg = $app->createResponseMsg($msg, $result[0]);
@@ -429,7 +439,7 @@ class Vendor extends AppInstance{
 			$app->pending_requests[$id] = $req;
 		}
 		$q = SQL::singleTransDetailQuery($id);
-		$app->createJobFromQuery($app, $req, 'new_iso', $q, false,
+		$app->createJobFromQuery($app, $req, $id.'-new_iso', $q, false,
 				function($result) use($app, $req, $track2, $cvc, $cb){
 			// first check if this transaction was already submitted
 			if (is_array($result)) {
@@ -441,13 +451,14 @@ class Vendor extends AppInstance{
 					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Transaction ('.$result[0]['id'].') of type ('.$result[0]['trans_type'].') was submitted to FD on '.$result[0]['submit_dt'].'!');
 				} else {
 					// update the submit_dt field for this transaction
-					$q = SQL::updateSubmitDTQuery($result[0]['id']);
+					$id = $result[0]['id'];
+					$q = SQL::updateSubmitDTQuery($id);
 					$tr = $result[0];
 					// add in our submit_dt, track2, and cvc data
 					$tr['submit_dt'] = date('Y-m-d H:i:s');
 					$tr['track2'] = $track2;
 					$tr['table49'] = $cvc;
-					$app->createJobFromQuery($app, $req, 'update_submit_dt', $q, false,
+					$app->createJobFromQuery($app, $req, $id.'-update_submit_dt', $q, false,
 							function($result) use($app, $req, $tr, $q, $cb){
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$result from update submit_dt:'.print_r($result, true));
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Update query:'.$q);
@@ -553,7 +564,7 @@ class Vendor extends AppInstance{
 			return;
 		}
 		$q = SQL::findReversalTransQuery($id);
-		$app->createJobFromQuery($app, $req, 'check_for_reversal_trans', $q, false, 
+		$app->createJobFromQuery($app, $req, $id.'-check_for_reversal_trans', $q, false, 
 				function($result, $q) use($app, $req, $id){
 			// check if we have a reversal trans; if so, we use its id to send
 			// the next message. If not, we create a new reversal trans record
@@ -580,13 +591,13 @@ class Vendor extends AppInstance{
 	public function createAutoReversalTrans($id, $req) {
 		$app = $this;
 		$q = SQL::singleTransDetailQuery($id);
-		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req){
+		$app->createJobFromQuery($app, $req, $id.'-reversal_trans', $q, false, function($result) use($app, $req, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal trans original receipt_number:'.$orig_tr['receipt_number']);
 			$q = SQL::buildQueryForReversal($result[0], ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL);
-			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
+			$app->createJobFromQuery($app, $req, $id.'-reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
 				$queries = SQL::buildQueriesForReversal($orig_tr, $result, $app);
@@ -621,9 +632,9 @@ class Vendor extends AppInstance{
 			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, __METHOD__.' $req object is null!');
 			return;
 		}
-		$job = $req->job;
+		$job = $app->job;
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
-		$job_result = $req->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
+		$job_result = $app->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
 			// get our sql connection
 			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
@@ -681,6 +692,8 @@ class Vendor extends AppInstance{
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to call $req->wakeup()!');
 						$job->setResult($name, $result);
 						$req->wakeup();
+					}else {
+						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'job_name:'.$name.' not set to wake $req!');
 					}
 				});
 			}); // end of sql->getConnection callback
@@ -694,11 +707,18 @@ class Vendor extends AppInstance{
 			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Job('.$job_name.') returned false! Retrying with updated name');
 			$app->createJobFromQuery($app, $req, $job_name.'2', $q, $wake, $cb);
 		} else {
+			// save our job_name in the $req object
+			$req->last_job_name = $job_name;
+			// 2013-04-19 The jobs are now added to the app instead of the request.
+			// we always execute our job immediately
+			$job();
 			//  if not set to wake the request, execute our job immediately
-			if (!$wake){
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
-				$job();
-			}
+//			if (!$wake){
+//				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
+//				$job();
+//			}else {
+//				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, __METHOD__.':'.__LINE__.' job_name:'.$job_name.' not set to execute!');
+//			}
 		}
 	}
 	
