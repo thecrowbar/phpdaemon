@@ -126,6 +126,20 @@ class RealTimeTransRequest extends HTTPRequest{
 	 */
 	public $process_mode;
 	
+	/**
+	 * The $app->createJobFromQuery() method will automatically rename a job
+	 * if it fails. This is where it will store the last job_nam.
+	 * @var String
+	 */
+	public $last_job_name = '';
+	
+	/**
+	 * The amount of time this request should sleep before waking itself up.
+	 * 180 seconds gives plenty of time for auto reversal timers to fire
+	 * @var Int
+	 */
+	public $sleep_time = 180;
+	
 //	public function __construct($url = null, $request_method = null, $options = nullarray) {
 //		if (is_object($url)) {
 //			Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'We got passed an object as our $url!');
@@ -142,6 +156,7 @@ class RealTimeTransRequest extends HTTPRequest{
 	public function init() {
 		// save a copy of our object for passing to callbacks
 		$req = $this;
+		$app = $req->appInstance;
 
 		// disable caching
 		$this->disableCaching();
@@ -181,16 +196,15 @@ class RealTimeTransRequest extends HTTPRequest{
 		}
 		
 		// run our job
-		$job();
-		// we sleep for 50 seconds to give the auto reversal timer enough time to
+		//$app->job();
+		// we sleep for $req->sleep_time seconds to give the auto reversal timer enough time to
 		// fire if the remote end does not respond
-		$sleep_time = 50;
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'->transID:'.$this->transID.' being put to sleep for '.$sleep_time.' seconds');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'->transID:'.$this->transID.' being put to sleep for '.$this->sleep_time.' seconds');
 
 		// sleep for $sleep_time seconds to give the query time to execute
 		// if the sleep() method is called outside of the run() method then the
 		// second parameter must be true
-		$this->sleep($sleep_time, true);
+		$this->sleep($this->sleep_time, true);
 	}
 	
 	/**
@@ -199,19 +213,20 @@ class RealTimeTransRequest extends HTTPRequest{
 	public function run() {
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'RealTimeTransRequest->run() executing');
 		$req = $this;
+		$app = $req->appInstance;
 		
 		// we need 1, 2, or 3 bits of information to process
 		// 1) (required) the id of the transaction from the DB
 		// 2) (optional) the Track2 data (TK2 cannot be stored in the DB)
 		// 3) (optional) the card security code (cannot be stored in DB)
 		
-		// check our job result
-		if (!is_object($this->job)) {
-			// our job is not an object something went wrong
-			Vendor::logger(Vendor::LOG_LEVEL_WARNING, __FILE__.':'.__METHOD__.':'.__LINE__.'$this->job is not an object');
-			echo json_encode(array('error'=>1, 'err_msg'=>'$this->job is not an object!', '$this->job'=>$this->job));
-			return;
-		}
+//		// check our job result
+//		if (!is_object($this->job)) {
+//			// our job is not an object something went wrong
+//			Vendor::logger(Vendor::LOG_LEVEL_WARNING, __FILE__.':'.__METHOD__.':'.__LINE__.'$this->job is not an object');
+//			echo json_encode(array('error'=>1, 'err_msg'=>'$this->job is not an object!', '$this->job'=>$this->job));
+//			return;
+//		}
 		
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $this->cmd:"'.$this->cmd.'"');
 		switch($this->cmd){
@@ -220,7 +235,9 @@ class RealTimeTransRequest extends HTTPRequest{
 				break;
 			case 'view_trans_detail':
 				// this is a single transaction detail
-				$detail_row = $this->job->getResult('trans_detail');
+				//$detail_row = $this->job->getResult('trans_detail');
+				$detail_row = $app->job->getResult($req->last_job_name);
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, ' using $job_name:'.$req->last_job_name);
 				if ($this->trans_detail_div_only) {				
 					try{
 						require_once('RealTimeTransaction.class.php');
@@ -258,9 +275,16 @@ class RealTimeTransRequest extends HTTPRequest{
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating JSON Response from iso:'.get_class($iso));
 		//if (is_object($iso) && )
 		$resp = new stdClass();
+		$resp->response_code = 'TR'; // set the default as timeout
+		$resp->approved = false;
 		if (is_object($iso)) {
 			if (method_exists($iso, 'getDataForBit')) {
 				$resp->response_code = $iso->getDataForBit(39);
+			}
+			// if we have a TIMEOUT_REVERSAL message then the response_code is '00'
+			// but that simply means the remote end received our REVERSAL.
+			if($iso->_trans_type === ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL) {
+				$resp->response_code = 'TR';
 			}
 			$resp->approved = ($resp->response_code === '00')?true:false;
 			$resp->avs_response = $iso->avs_response;
@@ -350,7 +374,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		$min_trans_id = (array_key_exists('min_trans_id', $req->req_params))?$req->req_params['min_trans_id']:0;
 		$after_date = (array_key_exists('after_date', $req->req_params))?$req->req_params['after_date']:'1970-01-01';
 		$q = SQL::viewAllTransQuery($min_trans_id, $after_date);
-		$app->createJobFromQuery($app, $req, 'view_trans', $q, true);
+		$app->createJobFromQuery($app, $req, $min_trans_id.'-view_trans', $q, true);
 	}
 	
 	/**
@@ -362,7 +386,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		$app = $this->appInstance;
 		$req = $this;
 		$q = SQL::singleTransDetailQuery($id);
-		$app->createJobFromQuery($app, $req, 'trans_detail', $q, true);
+		$app->createJobFromQuery($app, $req, $id.'-trans_detail', $q, true);
 	}
 	
 	/**
@@ -375,13 +399,13 @@ class RealTimeTransRequest extends HTTPRequest{
 		$app = $this->appInstance;
 		$req = $this;
 		$q = SQL::singleTransDetailQuery($id);
-		$app->createJobFromQuery($app, $req, 'reversal_trans', $q, false, function($result) use($app, $req, $type){
+		$app->createJobFromQuery($app, $req, $id.'-reversal_trans', $q, false, function($result) use($app, $req, $type, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal trans original receipt_number:'.$orig_tr['receipt_number']);
 			$q = SQL::buildQueryForReversal($result[0], $type);
-			$app->createJobFromQuery($app, $req, 'reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
+			$app->createJobFromQuery($app, $req, $id.'-reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
 				$queries = SQL::buildQueriesForReversal($orig_tr, $result, $app);
@@ -407,11 +431,11 @@ class RealTimeTransRequest extends HTTPRequest{
 		$app = $this->appInstance;
 		$req = $this;
 		$q = SQL::refundOriginalTransQuery($id);
-		$app->createJobFromQuery($app, $req, 'refund_trans', $q, false, 
-				function($result) use($app, $req){
+		$app->createJobFromQuery($app, $req, $id.'-refund_trans', $q, false, 
+				function($result) use($app, $req, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the refund_trans job callback $result:'.print_r($result, true));
 			$q = SQL::buildQueryForRefund($result[0]);
-			$app->createJobFromQuery($app, $req, 'process_refund', $q, false,
+			$app->createJobFromQuery($app, $req, $id.'-process_refund', $q, false,
 					function($result) use($app, $req){
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the process_refund job callback! $result:'.$result);
 				// create and send a new ISO8583 message from our query
