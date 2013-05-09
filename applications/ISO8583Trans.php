@@ -236,6 +236,18 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(31, '2');
 		}
 		
+		// $0.00 AVS/CVV/CVC2 verify transactions use bit31 === 0 (auth only)
+		// we also need to set the processing_code (bit3) correctly
+		if ($this->getDataForBit(4, true) === '0') {
+			$this->addData(31,'0');
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Changing bit 31 data to "0" for zero dollar AVS/CVV/CVC2 check');
+			$this->addData(3, '300000');
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Changing bit 3 data to "300000" for zero dollar AVS/CVV/CVC2 check');
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Bit4 data:"'.$this->getDataForBit(4, true).'"');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit4 data type:"'.Vendor::get_type($this->getDataForBit(4, true)).'"');
+		}
+		
 		// Bit 35 is the track2 data. It is only used for real-time transactions with swipe
 		if ($this->_trans_type === self::TRANS_TYPE_RETAIL &&
 				array_key_exists('track2', $this->_trans_row) &&
@@ -699,33 +711,35 @@ class ISO8583Trans extends ISO8583{
 		// Bit63 Data has 2 byte BCD size header, followed by:
 		// 2 byte (BCD) size header + 2 byte table number (ASCII 31-39)
 		// 2012-10-31 BCD size header is not longer included with data
-		$b63_data = $this->_data[63];
-		//$data_len = $this->convertBCDByte2DEC(substr($b63_data,0,2));
-		$data_len = strlen($b63_data);
-		$b63_hex = '';
-		for($i = 0; $i < strlen($b63_data); $i++) {
-			$b63_hex .= bin2hex($b63_data[$i])." ";
-		}
-		$this->b63_hex = $b63_hex;
-
-		// first two bytes are table size in BCD
-		// next two bytes are table number (raw decimal value)
-		$offset = 0;
-		$tsize = 0;
-		while ($offset < strlen($b63_data)) {
-			$tsize = $this->convertBCDByte2DEC(substr($b63_data,$offset,2));
-			$tnum = substr($b63_data,$offset+2,2);
-			// store our data in the bit63 data map
-			$this->BIT63_TABLES[$tnum]=substr($b63_data,$offset+4,$tsize-2);
-			$offset += $tsize+2;
-		}
-		
-		// parse the individual tables within bit63 data
-		$tables = array (14, 22, 'VI', 'MC', 'DS' );
-		foreach($tables as $tbl) {
-			if (array_key_exists($tbl, $this->BIT63_TABLES)) {
-				
+		if (array_key_exists(63, $this->_data)){
+			$b63_data = $this->_data[63];
+			//$data_len = $this->convertBCDByte2DEC(substr($b63_data,0,2));
+			$data_len = strlen($b63_data);
+			$b63_hex = '';
+			for($i = 0; $i < strlen($b63_data); $i++) {
+				$b63_hex .= bin2hex($b63_data[$i])." ";
 			}
+			$this->b63_hex = $b63_hex;
+
+			// first two bytes are table size in BCD
+			// next two bytes are table number (raw decimal value)
+			$offset = 0;
+			$tsize = 0;
+			while ($offset < strlen($b63_data)) {
+				$tsize = $this->convertBCDByte2DEC(substr($b63_data,$offset,2));
+				$tnum = substr($b63_data,$offset+2,2);
+				// store our data in the bit63 data map
+				$this->BIT63_TABLES[$tnum]=substr($b63_data,$offset+4,$tsize-2);
+				$offset += $tsize+2;
+			}
+
+			// parse the individual tables within bit63 data
+			$tables = array (14, 22, 'VI', 'MC', 'DS' );
+			foreach($tables as $tbl) {
+				if (array_key_exists($tbl, $this->BIT63_TABLES)) {
+
+				}
+			}			
 		}
 			
 		return $this->BIT63_TABLES;
