@@ -34,8 +34,8 @@
 	<div id="content">
 		<h2>Processing Draft for <?php echo $req->draft_date; ?></h2>
 		<?php
-		if (is_array($this->job->getResult('submit_draft'))) {
-			$trans = $this->job->getResult('submit_draft');
+		if (is_array($this->app->job->getResult('submit_draft'))) {
+			$trans = $this->app->job->getResult('submit_draft');
 			// save our batch ids so we can set them as transmitted
 			$batch_ids = array();
 			echo "<h3>Found ".count($trans)." transactions to process.</h3>";
@@ -45,7 +45,7 @@
 				foreach($trans as $t) {
 					//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$t:'.print_r($t, true));
 					// submit each transaction
-					$this->app->createMessage($t['id'], null);
+					$this->app->createMessage($t['id'], null, $this);
 					
 					if (!in_array($t['batch_id'], $batch_ids)) {
 						$batch_ids[] = $t['batch_id'];
@@ -61,8 +61,11 @@
 			
 		}else{
 			echo "<h1>Error getting transactions to submit!</h1>";
-			echo "<pre>\n";
+			echo "<pre>\$this->job\n";
 			print_r($this->job);
+			echo "</pre>\n";
+			echo "<pre>\$this->app->job\n";
+			print_r($this->app->job);
 			echo "</pre>\n";
 		}
 		?>
