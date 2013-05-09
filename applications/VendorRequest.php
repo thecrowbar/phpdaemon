@@ -90,9 +90,8 @@ class VendorRequest extends HTTPRequest{
 			$req->html_file = 'Vendor.stdin_log.php';
 			// create a job to read in our buffer
 			$job->addJob('read_buffer', function($name, $job) use ($req){
-				//$result = file_get_contents('/opt/phpdaemon/stdin_raw2.log');
-				$result = file_get_contents('/opt/phpdaemon/stdin_raw3.log');
-				//$result = file_get_contents('/opt/phpdaemon/xad');
+				$result = file_get_contents('/opt/phpdaemon/log/stdin.log');
+				//$result = file_get_contents('/opt/phpdaemon/log/stdout.log');
 				return $job->setResult($name, $result);
 			});
 		} else if (array_key_exists('command', $options) && $options['command'] === 'submit_draft') {
@@ -128,68 +127,23 @@ class VendorRequest extends HTTPRequest{
 		if (strlen($this->err_msg) < 1) {
 			if ($which_job === 'submit_draft') {
 				// draft job
-				$job->addJob('submit_draft', function($name, $job) use ($req){
-					// we get a connection to our SQL server here. I saved the connection
-					// object in a variable for testing, but it is not necessary to do so
-					$tsql = $req->appInstance->sql->getConnection(function($sql, $success) use ($name, $job, $req) {
-						// the callback receives the MySQLClientConnection object and a
-						// boolean success flag
-						if (!$success) {
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in ');
-							return $job->setResult($name, 'Error connecting to MySQL Server');
-						}
-						$query = Vendor::buildSubmitDraftSQL($req->draft_date);
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Query to get draft transactions:'.$query);
-						$sql->query($query, function($sql, $success) use ($job, $name, $query) {
-							if (!$success) {
-								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$sql->query() failed with error:'.$sql->errmsg);
-								return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
-							}
-
-							// save our results in the job
-							$job->setResult($name, $sql->resultRows);
-						});
-					}); // end of getConnection()
-				});
-				
+				$q = SQL::buildSubmitDraftSQL($req->draft_date);
+				$this->app->createJobFromQuery($this->app, $this, 'submit_draft', $q, true);
 				// add a job to get the list of batch_ids that will be processed
 			} else {
-
-				$job->addJob('pending_trans', function($name, $job) use ($req){
-
-					// we get a connection to our SQL server here. I saved the connection
-					// object in a variable for testing, but it is not necessary to do so
-					$tsql = $req->appInstance->sql->getConnection(function($sql, $success) use ($name, $job, $req) {
-						// the callback receives the MySQLClientConnection object and a
-						// boolean success flag
-						if (!$success) {
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in ');
-							return $job->setResult($name, 'Error connecting to MySQL Server');
-						}
-
-						$query = $req->appInstance->config->pending_batch_query->value;
-						$sql->query($query, function($sql, $success) use ($job, $name, $query) {
-							if (!$success) {
-								Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$sql->query() failed with error:'.$sql->errmsg);
-								return $job->setResult($name, 'Error with Query! Query:'.$query.', error:'.$sql->errmsg);
-							}
-
-							// save our results in the job
-							$job->setResult($name, $sql->resultRows);
-						});
-					}); // end of getConnection()
-
-				});
+				$q = SQL::viewAllTransQuery(0, '1969-12-31', $this->appInstance->trans_table);
+				$this->app->createJobFromQuery($this->app, $this, 'pending_trans', $q, true);
 			}
 		} else {
 			// create no job because we will display the error
+			Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Due to err message ('.$this->err_msg.') no job will be created');
 		}
 		
 
 		// run our job
 		$job();
 		
-		$sleep_time = 2;
+		$sleep_time = 5;
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' being put to sleep for '.$sleep_time.' seconds');
 		
 		// sleep for 5 seconds to give the query time to execute
