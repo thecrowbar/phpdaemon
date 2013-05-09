@@ -77,12 +77,6 @@ class Vendor extends AppInstance{
 	public $vendorconn;
 	
 	/**
-	 * The DB table that holds the transactions for this appInstance
-	 *@var String
-	 */
-	public $trans_table_name = 'fd_draft_data';
-	
-	/**
 	 * The vendor message
 	 * @var VendorMessage Object
 	 */
@@ -177,6 +171,32 @@ class Vendor extends AppInstance{
 	public $job;
 	
 	/**
+	 * Table name to pull/store transaction information
+	 * @var String
+	 */
+	public $trans_table = 'fd_draft_data';
+	
+	/**
+	 * Stores the last 1000 transactions sent out. This is an assoc array of
+	 * TID=>array(Transaction IDs (receipt numbers))
+	 * @var type 
+	 */
+	public $recent_trans = array();
+	
+	/**
+	 * Should the draft be automatically sent to FD
+	 * @var Bool
+	 */
+	public $auto_submit_draft = true;
+	
+	/**
+	 * The hour to auto submit draft. If after this time, the DB will checked every 
+	 * keep-alive timeout seconds for pending transactions
+	 * @var int
+	 */
+	public $auto_submit_time = 5;
+	
+	/**
 	 * Setting default config options
 	 * Overriden from AppInstance::getConfigDefaults
 	 * Uncomment and return array with your default options
@@ -194,7 +214,7 @@ class Vendor extends AppInstance{
 	public function init() {
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' start');
 		// start xdebug trace of our code
-		//xdebug_start_trace('/opt/phpdaemon/log/Vendor.trace');
+		//xdebug_start_trace('/opt/phpdaemon/log/Vendor.xt');
 		
 		// give ourself plenty of RAM
 		ini_set('memory_limit', '900M');
@@ -319,7 +339,7 @@ class Vendor extends AppInstance{
 				$app->vendorclient->getConnection( $url, function ($conn) use ($app, $callbacks) {
 					$app->vendorconn = $conn;
 					if ($conn->isConnected()) {
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app).' connected at '.$conn->hostReal.':'.$conn->port);
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app).' connected at '.$conn->getHost().':'.$conn->getPort());
 						self::attachEventHandlers($conn, $app);
 
 						// call our callback functions
@@ -329,7 +349,7 @@ class Vendor extends AppInstance{
 						}
 					}
 					else {
-						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'VendorClient: unable to connect ('.$conn->hostReal.':'.$conn->port.')');
+						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'VendorClient: unable to connect ('.$conn->getHost().':'.$conn->getPort().')');
 					}
 				});
 			} else {
@@ -369,8 +389,9 @@ class Vendor extends AppInstance{
 	 * @param byte[] $msg - the data received from the vendor
 	 * @param VencodrClientConnection $conn - the remote connection
 	 * @param Vendor $app - a link back to this object
+	 * @param Bool $duplicate - is the second of a duplicate transaction
 	 */
-	public function processReceivedData($msg, $conn, $app){
+	public function processReceivedData($msg, $conn, $app, $duplicate = false){
 		$app = $this;
 		// this closure handles the incoming data
 		// VendorClientConnection has done basic sanity checks to ensure 
@@ -393,11 +414,15 @@ class Vendor extends AppInstance{
 			
 			// we first get the DB record id of the transaction and then update
 			// several tables with data from the response
-			$q = SQL::buildQueryForOriginalTrans($msg, $app);
-			$id = $msg->original_trans_id;
-			$app->createJobFromQuery($app, null, $id.'-trans_orig_rec', $q, false, 
-					function($result)use($app, $req, $job, $name, $msg){
+			$q = SQL::buildQueryForOriginalTrans($msg, $this->trans_table, $duplicate);
+			$id = ($msg->original_trans_id===-1) ?$msg->receipt_number:$msg->original_trans_id;
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Transaction using id:'.$id.', $msg->receipt_number:'.$msg->receipt_number.', $msg->original_trans_id:'.$msg->original_trans_id);
+			$name = $id.'-trans_orig_rec';
+			$app->createJobFromQuery($app, null, $name, $q, false, 
+					function($result)use($app, $msg, $name, $q){
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Job callback for job name:'.$name);
 				// process our response into a complete ISO8585 msg
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call createResponseMsg() and pass in:'.print_r($result, true));
 				$msg = $app->createResponseMsg($msg, $result[0]);
 
 				// at this point we have a complete transaction response
@@ -422,6 +447,16 @@ class Vendor extends AppInstance{
 	}
 	
 	/**
+	 * createResponseMsg() - process our ISO object into a complete ISO8583 Object
+	 * @param ISO8583Trans $msg - the returned TCP data
+	 * @param Array $tr - DB record of the original transaction
+	 */
+	public function createResponseMsg($msg, $tr){
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' called with arguments: $msg:'.print_r($msg, true).', $tr:'.print_r($tr, true));
+		return $msg;
+	}
+	
+	/**
 	 * createISOandSend() - given a DB record id, create an ISO8583 message and
 	 * submit
 	 * @param RealTimeTrans $app - the appInstance we are communicating with
@@ -438,7 +473,7 @@ class Vendor extends AppInstance{
 		if (is_object($req)) {
 			$app->pending_requests[$id] = $req;
 		}
-		$q = SQL::singleTransDetailQuery($id);
+		$q = SQL::singleTransDetailQuery($id, $this->trans_table);
 		$app->createJobFromQuery($app, $req, $id.'-new_iso', $q, false,
 				function($result) use($app, $req, $track2, $cvc, $cb){
 			// first check if this transaction was already submitted
@@ -452,7 +487,7 @@ class Vendor extends AppInstance{
 				} else {
 					// update the submit_dt field for this transaction
 					$id = $result[0]['id'];
-					$q = SQL::updateSubmitDTQuery($id);
+					$q = SQL::updateSubmitDTQuery($id, $this->trans_table);
 					$tr = $result[0];
 					// add in our submit_dt, track2, and cvc data
 					$tr['submit_dt'] = date('Y-m-d H:i:s');
@@ -475,7 +510,7 @@ class Vendor extends AppInstance{
 								if ($msg->ISO8583->master_trans_id === -1 
 										&& $msg->ISO8583->_trans_type === ISO8583Trans::TRANS_TYPE_RETAIL) {
 									// this is the first auth message start our timer
-									// the timer will call itself everytime it expires
+									// the timer will re-call itself everytime it expires
 									// and keep doing that until it receives a response
 									$app->createAutoReversalTimer($app, $msg->ISO8583->_trans_id);
 									
@@ -590,7 +625,7 @@ class Vendor extends AppInstance{
 	 */
 	public function createAutoReversalTrans($id, $req) {
 		$app = $this;
-		$q = SQL::singleTransDetailQuery($id);
+		$q = SQL::singleTransDetailQuery($id, $this->trans_table);
 		$app->createJobFromQuery($app, $req, $id.'-reversal_trans', $q, false, function($result) use($app, $req, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
@@ -629,15 +664,17 @@ class Vendor extends AppInstance{
 		// if our $req is null, then we just log an error; if $req is an int
 		// then we search for the $req object in $app->pending_requests
 		if ($req === null){
-			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, __METHOD__.' $req object is null!');
-			return;
+			Vendor::logger(Vendor::LOG_LEVEL_WARNING, __METHOD__.' $req object is null!');
+			// 2013-05-02 we no longer create the job on our $req object. so this
+			// is not a fatal error
+			//return;
 		}
 		$job = $app->job;
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name.' to $job object of type:'.get_class($job));
 		$job_result = $app->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
 			// get our sql connection
-			$app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
+			$sqlConnResult = $app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 				if (!$success) {
 					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
 				}
@@ -691,13 +728,17 @@ class Vendor extends AppInstance{
 					if ($wake) {
 						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to call $req->wakeup()!');
 						$job->setResult($name, $result);
-						$req->wakeup();
+						if (is_object($req)) {
+							$req->wakeup();
+						}
 					}else {
 						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'job_name:'.$name.' not set to wake $req!');
 					}
 				});
 			}); // end of sql->getConnection callback
-			
+			if($sqlConnResult === false) {
+				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to get SQL connection! query:'.$q);
+			}
 			
 			
 		}); // end of job callback
@@ -708,17 +749,13 @@ class Vendor extends AppInstance{
 			$app->createJobFromQuery($app, $req, $job_name.'2', $q, $wake, $cb);
 		} else {
 			// save our job_name in the $req object
-			$req->last_job_name = $job_name;
+			if (!is_null($req)){
+				$req->last_job_name = $job_name;
+			}
 			// 2013-04-19 The jobs are now added to the app instead of the request.
 			// we always execute our job immediately
 			$job();
-			//  if not set to wake the request, execute our job immediately
-//			if (!$wake){
-//				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing job('.$job_name.') now!');
-//				$job();
-//			}else {
-//				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, __METHOD__.':'.__LINE__.' job_name:'.$job_name.' not set to execute!');
-//			}
+			
 		}
 	}
 	
@@ -817,14 +854,56 @@ class Vendor extends AppInstance{
 			while (!$app->vendorconn->connected) {
 				$app->connect();
 			}
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'while() loop completed! Connected state:'.$app->vendorconn->connected);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'while() loop completed! Connected state:'.$app->vendorconn->isConnected());
 			// check connection state and if established send message
 			if ($app->vendorconn->connected) {
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to send data to '.$app->vendorconn->hostReal);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to send data to '.$app->vendorconn->getHost());
 				$msg = $app->tq->dequeue();
-				$app->vendorconn->sendData($msg->getTCPMessage());
+				// varify this is not a dupe trans
+				if (!$this->checkDupeTrans($msg->ISO8583)) {
+					$app->vendorconn->sendData($msg->getTCPMessage());
+				}
 			}
 		}
+	}
+	
+	/**
+	 * checkDupeTrans() - compare this transaction ID to recent ones to prevent
+	 * duplicate transactions from gogin through
+	 * @param String $tcp_data - the binary TCP data to send
+	 * @return boolean
+	 */
+	public function checkDupeTrans($iso) {
+		$TID = $iso->getDataForBit(41, true);
+		$receipt_number = $iso->getDataForBit(11, true);
+		$MTI = $iso->getMTI(true);
+		// we only check MTI === 0100; others are followup messages
+		if ($MTI !== '0100') {
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Trans ('.$receipt_number.') does not have MTI of 0100. Sending without check. MTI:'.$MTI);
+			return false;
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$receipt_number.') has MTI:'.$MTI.' Checking against recent transactions.');
+		}
+		// find if this transaction has been sent
+		// ensure this TID is an array in $recent_trans
+		if (!array_key_exists($TID, $this->recent_trans)) {
+			$this->recent_trans[$TID] = array();
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding TID ('.$TID.') to recent_trans array');
+		}
+		// we only store the last 5000 transactions for each TID
+		if (count($this->recent_trans[$TID]) >= 50000) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Removing 1 transaction from TID:'.$TID);
+			array_shift($this->recent_trans[$TID]);
+		}
+		if (in_array($receipt_number, $this->recent_trans[$TID])){
+			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Transaction ('.$receipt_number.') has already been sent!');
+			return true;
+		} else {
+			$this->recent_trans[$TID][] = $receipt_number;
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding trans ('.$receipt_number.') to recent_trans array');
+		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$receipt_number.') should be sent!');
+		return false;
 	}
 	
 	/**
@@ -839,21 +918,46 @@ class Vendor extends AppInstance{
 	}
 	
 	/**
+	 * processDraft() - pull a single transaction from the DB and send it off
+	 */
+	public function processDraft(){
+		$app = $this;
+		$today = date('Y-m-d');
+		$q = SQL::buildSubmitDraftSQL($today);
+		$app->createJobFromQuery($app, null, 'submit_draft', $q, false, 
+				function($result) use($app, $today){
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing the call back for processDraft() job');
+			
+			if (count($result) > 0) {
+				// send off the first transaction
+				$id = array_shift($result);
+				$app->createISOandSend($app, null, $id, function() use ($app){
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Inside the createISOandSend() CB from processDraft()');
+					$app->processDraft();
+				});
+			} else {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'No more transactions to process for '.$today.' in '.__METHOD__.':'.__LINE__);
+			}	
+		});
+	}
+	
+	/**
 	 * createTransaction() - create and send a transaction over TCP
 	 * @param int $msg_id - the database id of the transaction to create
 	 * @param VendorWebSocketRoute $ws_closure - the closure that handles websocket communication
+	 * @param VendorRequest $req - the HTTP request that initiated this
 	 * @return Null
 	 */
-	public function createMessage($msg_id, $ws_closure) {
+	public function createMessage($msg_id, $ws_closure, $req) {
 		$app = $this;
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called with argument:'.$msg_id);
+		Vendor::logger(Vendor::LOG_LEVEL_NOTICE, __METHOD__.' called with argument:'.$msg_id);
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' callback is:'.print_r($cb, true));
 		
 		// save our closure in appInstance so we can send data back to client 
 		// over web socket
 		$this->ws = $ws_closure;
 		
-		$this->createISOandSend($app, null, $msg_id);		
+		$this->createISOandSend($app, $req, $msg_id);		
 	}
 	
 	/**
@@ -986,6 +1090,18 @@ class Vendor extends AppInstance{
 		$conn->addEventHandler('data_sent', function($data_length) use ($app){
 			// this is really just for testing
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, get_class($app). ' data_sent callback fired! Sent '.$data_length.' bytes.');
+		});
+		
+		// add a handler for the keep-alive timer firing; this will check if we should
+		// auto submit the draft
+		$conn->addEventHandler('keep-alive_timeout', function() use ($app){
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'keep-alive_timeout event handler firing');
+			// check if should auto submit the draft for today
+			if ($app->auto_submit_draft && date('G') > $app->auto_submit_time) {
+				// we need to check for transactions
+				Vendor::logger(Vendor::LOG_LEVEL_INFO,'Auto checking for draft transactions');
+				$app->processDraft();
+			}
 		});
 	}
 	
