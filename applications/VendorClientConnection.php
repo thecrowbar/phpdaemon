@@ -37,10 +37,15 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public $heldPackets = array();
 	/**
+	 * Flag to indicate that no data should actually be sent. Useful for testing
+	 * @var bool
+	 */
+	public $do_not_send = true;
+	/**
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
 	 */
-	public $keepaliveTimeout = 600;
+	public $keepaliveTimeout = 10;
 	/**
 	 * Log file to record all incoming data to
 	 * @var String
@@ -84,13 +89,25 @@ class VendorClientConnection extends NetworkClientConnection {
 	public $min_pkt_size = 10;
 	
 	/**
-	 * Called when the connection is comnnected and ready to process data
+	 * The main application that created this connection
+	 * @var Vendor
+	 */
+	public $appInstance;
+	
+	public function init(){
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called with no arguments');
+	}
+	
+	/**
+	 * Called when the connection is connected and ready to process data
+	 * @param Vendor $appInstance - the appinstance that crated this connection
 	 */
 	public function onReady() {
 		// create a timer to fire keep alive messages, default timeout = 90 secs
 		$conn = $this;
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__CLASS__.print_r($this, true));
 		$this->keepaliveTimer = setTimeout(function($timer) use($conn) {
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing! About to send keep-alive ISO8583 message');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' timer callback firing!');
 			$conn->ping();
 		}, 1e6 * $this->keepaliveTimeout);
 		
@@ -243,6 +260,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Send a keepalive message
 	 */
 	public function ping(){
+		$this->event('keep-alive_timeout');
 		$this->sendData(VendorMessage::getTCPKeepAlive());
 	}
 	
@@ -261,25 +279,32 @@ class VendorClientConnection extends NetworkClientConnection {
 					fclose($file);
 				}
 			}
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Wrote '.strlen($data).' bytes of data.');
+
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Writing '.strlen($data).' bytes of data.');
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
-			$send_result = $this->write($data);
-			
-			if ($send_result) {
-				// our transaction was sent
-				$this->event('data_sent', strlen($data));
-				// if we sent our data, reset our keepaliveTimer
-				Timer::setTimeout($this->keepaliveTimer);
+			if ($this->do_not_send){
+				Vendor::logger(Vendor::LOG_LEVEL_ALERT, 'Not sending data due to the $do_not_send === true');
 			} else {
-				// our transaction failed...
-				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to send data using host '.$this->hostReal.':'.$this->port);
-				$this->connected = false;
+				$send_result = $this->write($data);
+				if ($send_result) {
+					// our transaction was sent
+					$this->event('data_sent', strlen($data));
+					// if we sent our data, reset our keepaliveTimer
+					Timer::setTimeout($this->keepaliveTimer);
+				} else {
+					// our transaction failed...
+					Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to send data using host '.$this->hostReal.':'.$this->port);
+					$this->connected = false;
+				}
 			}
+				
 		}catch(Exception $ex) {
 			Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Exception caught while trying to send data! Exception:'.$ex);
 		}
 		
 	}
+	
+	
 	
 }
 ?>
