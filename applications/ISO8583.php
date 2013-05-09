@@ -417,7 +417,7 @@ class ISO8583 {
 	 * This only applies to 0110 and 0410 messages
 	 * @var int
 	 */
-	public $original_trans_id;
+	public $original_trans_id = -1;
 	
 	/**
 	 * Transaction amount of the original transaction
@@ -441,9 +441,6 @@ class ISO8583 {
     // </editor-fold>
     
     // <editor-fold defaultstate="collapsed" desc="Class Private Methods">
-    /* --------------------------------------------------------------
-        private functions
-       -------------------------------------------------------------- */
     
     //return data element in correct format
     protected function _packElement($data_element, $data, $bit = -1) {
@@ -1049,9 +1046,6 @@ class ISO8583 {
     // </editor-fold>
     
     // <editor-fold defaultstate="collpased" desc="Class Public Methods">
-    /* -----------------------------------------------------
-        method
-       ----------------------------------------------------- */
 
     //method: add data element
     public function addData($bit, $data) {
@@ -1099,7 +1093,9 @@ class ISO8583 {
 				// parse the bits data and convert from BCD, etc to ascii
 				if ($this->DATA_ELEMENT[$bit][0] === 'bcd') {
 					// convert from BCD to decimal and trim to maximum length
-					return substr($this->convertBCDByte2DEC($this->_data[$bit]),0,$this->DATA_ELEMENT[$bit][1]);
+					$length = $this->DATA_ELEMENT[$bit][1];
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trimming data to '.$length.' characters');
+					return substr($this->convertBCDByte2DEC($this->_data[$bit]),0,$length);
 				} else if ($bit == 41 || $bit == 42) {
 					// this bits do not conform to normal ASCII/Numeric. They are zero filled on the left
 					return ltrim($this->_data[$bit], '0');
@@ -1147,7 +1143,11 @@ class ISO8583 {
         return $this->_bitmap;
     }
 
-    //method: retrieve mti
+	/**
+	 * getMTI() - return the MTI value for this ISO8583 object
+	 * @param Bool $hex - should we return a HEX of binary version of the MTI
+	 * @return String
+	 */
     public function getMTI($hex = false) {
 		if (!$hex) {
 			return $this->_mti;
@@ -1245,7 +1245,8 @@ class ISO8583 {
 				}
 			}
 			// parse our bit63 data if present
-			if ($this->_data[63] != '?' && method_exists($this, '_parseBit63Data')) {
+			if (array_key_exists(63, $this->_data) && $this->_data[63] != '?' 
+					&& method_exists($this, '_parseBit63Data')) {
 				$this->_parseBit63Data();
 				// set our CVV2/CVC response if available
 				if (strlen($this->getParsedBit63Table49()) > 0) {
