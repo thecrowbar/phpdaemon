@@ -32,7 +32,11 @@ class VendorWebSocketRoute extends WebSocketRoute {
 				// result to client over ws
 				$this->appInstance->ws = $this;
 				$this->appInstance->createISOandSend($this->appInstance, null, $client_data->trans_id);
-			} else {
+			} else if($client_data->command === 'refund_trans'){
+				// create and submit a refund transaction for the given transaction id
+				$this->appInstance->ws = $this;
+				$this->appInstance->createRefundTransaction($client_data->trans_id);
+			}else {
 				// unknown command
 				$this->client->sendFrame('Unknown command:'.$client_data->command, 'STRING');
 			}
