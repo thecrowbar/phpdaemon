@@ -40,12 +40,12 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Flag to indicate that no data should actually be sent. Useful for testing
 	 * @var bool
 	 */
-	public $do_not_send = true;
+	public $do_not_send = false;
 	/**
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
 	 */
-	public $keepaliveTimeout = 10;
+	public $keepaliveTimeout = 90;
 	/**
 	 * Log file to record all incoming data to
 	 * @var String
@@ -284,6 +284,8 @@ class VendorClientConnection extends NetworkClientConnection {
 			//$send_result = $this->requestByKey(null, $ISO8583Msg, $cb);
 			if ($this->do_not_send){
 				Vendor::logger(Vendor::LOG_LEVEL_ALERT, 'Not sending data due to the $do_not_send === true');
+				// reset our keepaliveTimer
+					Timer::setTimeout($this->keepaliveTimer);
 			} else {
 				$send_result = $this->write($data);
 				if ($send_result) {
