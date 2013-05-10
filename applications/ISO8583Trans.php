@@ -135,7 +135,7 @@ class ISO8583Trans extends ISO8583{
 		if ($db_result === null) {
 			// we were called without any options just create an empty object
 		}else if (is_array($db_result)) {
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating ISO8583Trans object with data:'.print_r($db_result, true));
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating ISO8583Trans object with data:'.print_r($db_result, true));
 			// FIXME this needs to be changed for real-time auth
 			$this->_trans_type = $trans_type;
 			$this->_trans_row = $db_result;
@@ -528,7 +528,9 @@ class ISO8583Trans extends ISO8583{
 					$tblDS .= 'DS';
 				}
 
-			} else {
+			} else if (strtoupper($this->card_type) === 'AMERICAN EXPRESS'){
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Not adding card specific tables for card type:'.$this->card_type);
+			}else {
 				//throw new Exception('Unknown card type:'.$this->card_type.' card number:'.$this->);
 				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Pri acct number ('.$this->_pri_acct_no.') has unknown card type:'.$this->card_type);
 			}
