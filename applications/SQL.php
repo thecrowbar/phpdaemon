@@ -10,34 +10,57 @@ class SQL {
 	/**
 	 * buildQueryForRefund() - create an INSERT query for a refund transaction
 	 * @param Array $trans_row - DB record of the original transaction
+	 * @param String $trans_table - table name that stores information on transactions
+	 * @param String $trans_type - RETAIL | RECURRING_BILLING
 	 * @return String
 	 */
-	public static function buildQueryForRefund($trans_row) {
+	public static function buildQueryForRefund($trans_row, $trans_table, $trans_type) {
 		$ta = $trans_row;
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$ta:'.print_r($ta, true));
-		$query = "INSERT INTO fd_trans 
-			(terminal_id, trans_dt, 
-			user_name, sale_site_id, sx_order_number,
-			msg_type, pri_acct_no, cc_last_four, 
-			cc_type, processing_code, trans_amount, 
-			cc_exp, pos_entry_pin, pos_condition_code,
-			avs_response, trans_type)
-			VALUES(
-			{$ta['terminal_id']}, NOW(),
-			'{$ta['user_name']}', '{$ta['sale_site_id']}', '{$ta['sx_order_number']}',
-			'0100', '{$ta['pri_acct_no']}', '{$ta['cc_last_four']}', 
-			'{$ta['cc_type']}', '200000', {$ta['trans_amount']}, 
-			'{$ta['cc_exp']}', '{$ta['pos_entry_pin']}', '{$ta['pos_condition_code']}',
-			'{$ta['avs_response']}', 3)";
+		if ($trans_type === 'RETAIL'){
+			$query = "INSERT INTO {$trans_table} 
+				(terminal_id, trans_dt, 
+				user_name, sale_site_id, sx_order_number,
+				msg_type, pri_acct_no, cc_last_four, 
+				cc_type, processing_code, trans_amount, 
+				cc_exp, pos_entry_pin, pos_condition_code,
+				avs_response, trans_type)
+				VALUES(
+				{$ta['terminal_id']}, NOW(),
+				'{$ta['user_name']}', '{$ta['sale_site_id']}', '{$ta['sx_order_number']}',
+				'0100', '{$ta['pri_acct_no']}', '{$ta['cc_last_four']}', 
+				'{$ta['cc_type']}', '200000', {$ta['trans_amount']}, 
+				'{$ta['cc_exp']}', '{$ta['pos_entry_pin']}', '{$ta['pos_condition_code']}',
+				'{$ta['avs_response']}', 3)";
+		} else if ($trans_type === 'RECURRING_BILLING') {
+			$query = "INSERT INTO {$trans_table} 
+				(batch_id, terminal_id, create_dt, 
+				schedule_date, user_name, site_id,
+				frozen, pkg_description, uv, 
+				msg_type, pri_acct_no, cc_last_four, 
+				cc_type, processing_code, trans_amount, 
+				cc_exp, pos_entry_pin, pos_condition_code,
+				avs_response, trans_type, acquirer_reference_data)
+				VALUES(
+				{$ta['batch_id']}, {$ta['terminal_id']}, NOW(),
+				'{$ta['schedule_date']}', '{$ta['user_name']}', '{$ta['site_id']}',
+				'{$ta['frozen']}', '{$ta['pkg_description']}', '{$ta['uv']}',
+				'0100', '{$ta['pri_acct_no']}', '{$ta['cc_last_four']}', 
+				'{$ta['cc_type']}', '200000', {$ta['trans_amount']}, 
+				'{$ta['cc_exp']}', '{$ta['pos_entry_pin']}', '08',
+				'{$ta['avs_response']}', 3, 1)";
+		}	
 		return $query;
 	}
 	
 	/**
 	 * Build the query to retrieve the transaction details of the original transaction
 	 * @param ISO8583Trans $msg - the ISO8583 message returned from remote vendor
+	 * @param String $trans_table - table name that stores information on transactions
+	 * @param Bool $duplicate - is this a duplicate transaction. If so change the order by
 	 * @return string
 	 */
-	public static function buildQueryForOriginalTrans($msg, $app) {
+	public static function buildQueryForOriginalTrans($msg, $trans_table, $duplicate = false) {
 		// build our query to retrieve the original request data from the DB
 		// the retrieval_reference_number value from followup messages will
 		// match exactly the first 0100 auth message not the DB id of this transaction
@@ -56,20 +79,28 @@ class SQL {
 				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unknown MTI:'.$msg->getMTI(true));
 		}
 		
+		// order by ASC to get the last submitted trans; order by DESC to get the
+		// first. This only applies when two trans match 
+		$order_by = 'DESC';
+		if ($duplicate) {
+			$order_by = 'ASC';
+		}
+		
 		// we may have more than one response with MTI 0410. This is caused by 
 		// us sending several timeout reversal transactions and then getting all 
 		// responses back at once
 		// We violate the spec by sending different bit 12/13 for each 0400 
 		// timeout reversal. This is needed to match the response to the correct
 		$query = "SELECT fdt.*, ti.terminal_id, mi.mid AS mercant_id
-				FROM fd_trans fdt
+				FROM {$trans_table} fdt
 				LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
 				LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
 				WHERE (fdt.id = {$msg->retrieval_reference_number} 
-						OR master_trans_id = {$msg->retrieval_reference_number})
+						OR master_trans_id = {$msg->retrieval_reference_number}
+						OR fdt.receipt_number = {$msg->receipt_number})
 					AND fdt.msg_type LIKE '{$msg_type}'
 					AND ti.terminal_id = {$msg->terminal_id}
-					ORDER BY create_dt DESC
+					ORDER BY submit_dt {$order_by}
 					LIMIT 1";
 		
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Query for original trans:'.$query);
@@ -151,15 +182,16 @@ class SQL {
 	 * buildQueryForReversal() - create a query to reverse the given DB record
 	 * @param Array $t - DB record of the transaction to reverse
 	 * @param Int $type - named const from ISO8583Trans class (5 or 6 are the only valid types)
+	 * @param String $trans_table - table name that stores information on transactions
 	 * @return String
 	 */
-	public static function buildQueryForReversal($t, $type){
+	public static function buildQueryForReversal($t, $type, $trans_table){
 		// 2013-04-17 processing_code value is in question
 		// Eileen from FD stated in her email from 4-16 that for full auth reversal
 		// the value should be 009000. The spec lists that as Debit reversal
 		// Credit reversal is listed as 000000
 		// The Receipt Number on a 0400 reversal should match the 0100 message
-		$q = "INSERT INTO fd_trans 
+		$q = "INSERT INTO {$trans_table} 
 			(trans_type, terminal_id, customer_site_id,
 			user_name, sale_site_id, sx_order_number,
 			msg_type, pri_acct_no, cc_last_four,
@@ -179,9 +211,15 @@ class SQL {
 			";
 		return $q;
 	}
-	
-	public static function buildQueryForTimeoutReversal($t){
-		$q = "INSERT INTO fd_trans
+	/**
+	 * buildQueryForTimeoutReversal() - insert a record into the DB that is a
+	 * reversal of a previous message
+	 * @param Array $t - DB Record for the transaction to reverse
+	 * @param type $trans_table - the DB table that stores transaction data
+	 * @return String
+	 */
+	public static function buildQueryForTimeoutReversal($t, $trans_table){
+		$q = "INSERT INTO {$trans_table}
 			(trans_type, terminal_id, customer_site_id,
 			user_name, sale_site_id, sx_order_number,
 			msg_type, pri_acct_no, cc_last_four,
@@ -226,12 +264,19 @@ class SQL {
 								AND cdl.approve_user <> ''
 								AND cdl.approve_dt <> '0000-00-00 00:00:00'
 								AND cdl.approve_ip_address <> ''
+								AND fdd.submit_dt = '0000-00-00 00:00:00'
 						LIMIT {$trans_limit}";
 		return $query;
 	}
 	
-	public static function updateSubmitDTQuery($id) {
-		$q = "UPDATE fd_trans SET submit_dt = NOW() WHERE id ={$id}";
+	/**
+	 * updateSubmitDTQuery() - create a query to update the submit_dt of a transaction
+	 * @param Int $id - the DB record ID of the transaction
+	 * @param String $trans_table - the table name that sotres the transaction data
+	 * @return String
+	 */
+	public static function updateSubmitDTQuery($id, $trans_table) {
+		$q = "UPDATE {$trans_table} SET submit_dt = NOW() WHERE id ={$id}";
 		return $q;
 	}
 	
@@ -239,26 +284,28 @@ class SQL {
 	 * refundOriginalTransQuery() - create the SQL to pull vlaues required to
 	 * create a refund transaction
 	 * @param Int $id - DB record id of the transaction to refund
+	 * @param String $trans_table - the table name that sotres the transaction data
 	 * @return string
 	 */
-	public static function refundOriginalTransQuery($id){
-		$q = 'SELECT id, terminal_id, trans_dt,
+	public static function refundOriginalTransQuery($id, $trans_table){
+		$q = "SELECT id, terminal_id, trans_dt,
 				user_name, sale_site_id,  msg_type, 
 				pri_acct_no, cc_last_four, cc_type, 
 				trans_amount, cc_exp, pos_entry_pin, 
 				pos_condition_code, response_code, avs_response,
 				sx_order_number
-			FROM fd_trans
-			WHERE id='.$id;
+			FROM {$trans_table}
+			WHERE id=".$id;
 		return $q;
 	}
 	
 	/**
 	 * singleTransDetailQuery() - query to retrieve all data for a single transaction
 	 * @param Int $id - DB record id for the trans to pull
+	 * @param String $trans_table - the DB table name to pull transactions from
 	 * @return String
 	 */
-	public static function singleTransDetailQuery($id){
+	public static function singleTransDetailQuery($id, $trans_table){
 		$q = "SELECT fdt.*,
 		CASE
 			WHEN t14v.aci IS NOT NULL THEN t14v.aci
@@ -312,7 +359,7 @@ class SQL {
 		mi.host_capture AS acquirer_reference_data,
 		ti.terminal_id -- this overwrites the value from the fdt table
 		
-			FROM fd_trans fdt
+			FROM {$trans_table} fdt
 			LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
 			LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
 			LEFT JOIN trans_type_list ttl ON ttl.type_id = fdt.trans_type
@@ -521,15 +568,16 @@ class SQL {
 	 * qualifiers
 	 * @param Int $min_trans_id - transactions with ID less than this are excluded
 	 * @param String $after_date - YYYY-MM-DD transaction create_dt must be after
+	 * @param String $trans_table - the table name to pull transaction data from 
 	 * @return string
 	 */
-	public static function viewAllTransQuery($min_trans_id = 0, $after_date = '1969-12-31'){
+	public static function viewAllTransQuery($min_trans_id = 0, $after_date = '1969-12-31', $trans_table){
 		$q = "SELECT fdt.id, fdt.submit_dt, fdt.msg_type, fdt.cc_last_four, 
 				fdt.cc_type, fdt.processing_code, fdt.trans_amount, fdt.receipt_number, 
 				fdt.cc_exp, fdt.pos_entry_pin, fdt.pos_condition_code, fdt.retrieval_reference_num,
 				fdt.auth_iden_response, fdt.response_code, fdt.avs_data, fdt.avs_response,
 				fdt.table49_response, fdt.refunded
-			FROM fd_trans fdt
+			FROM {$trans_table} fdt
 			WHERE id > {$min_trans_id}
 				AND create_dt > '{$after_date}'
 			ORDER BY create_dt DESC
@@ -540,15 +588,82 @@ class SQL {
 	/**
 	 * findReversalTransQuery
 	 * @param Int $id - DB record ID of the trans to check for reversal
+	 * @param String $trans_table - the table name to pull transaction data from 
 	 * @return string - the query to execute
 	 */
-	public static function findReversalTransQuery($id){
+	public static function findReversalTransQuery($id, $trans_table){
 		$q = "SELECT fdt.id 
-				FROM fd_trans fdt
+				FROM {$trans_table} fdt
 				LEFT JOIN trans_type_list ttl ON ttl.type_id = fdt.trans_type
 				WHERE ttl.type_name = 'TIMEOUT_REVERSAL'
 					AND fdt.master_trans_id = {$id}";
 		return $q;
+	}
+	
+	/**
+	 * buildQueriesForTransInsert() - create a transaction record from an ISO8583
+	 * object
+	 * @param ISO8583Trans $iso - the ISO object to build a transaction record from
+	 * @param String $trans_table - the DB table that stores transaction data
+	 * @return String[]
+	 */
+	public static function buildQueriesForTransInsert($iso, $trans_table) {
+		$queries = array();
+		// get our individual pieces of infor from the transaction
+		$pri_acct_no = $iso->getDataForBit(2, true);
+		if (substr($pri_acct_no,0,1) === '3') {
+			// AmEx card
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$trans_id.') is an AmEx. Bit2 length:');
+			$pri_acct_no = substr($pri_acct_no,0,-1);
+		}
+		$cc_last_four = substr($pri_acct_no, -4);
+		$card_type = $iso->credit_card->CreditCardType($pri_acct_no, true);
+		$processing_code = $iso->getDataForBit(3, true);
+		$trans_amount = $iso->getDataForBit(4, true);
+		try{
+			$time = $iso->getDataForBit(12, true); // HHMMSS
+			$date = $iso->getDataForBit(13, true); // MMDD
+			$submit_dt = '2013-'.substr($date,0,1).'-'.substr($date,-2).' '.substr($time,0,1).':'.substr($time,1,2).':'.substr($time,-2);
+		}catch(Exception $e) {
+			$submit_dt = '';
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Exception Caught! $e:'.$e);
+		}
+		$cc_exp = $iso->getDataForBit(14, true);
+		$pos_entry_pin = $iso->getDataForBit(22, true);
+		$pos_condition_code = $iso->getDataForBit(25, true);
+		$trans_id = $iso->getDataForBit(37);
+		$avs_data = $iso->getDataForBit(48, true);
+		$queries[] = "INSERT INTO {$trans_table}
+			(trans_type, batch_id, terminal_id, create_dt,
+			schedule_date, submit_dt, user_name, site_id, 
+			frozen, pkg_description, uv, draft_amount,
+			tan_tax_amount, msg_type, pri_acct_no, cc_last_four,
+			cc_type, processing_code, trans_amount, amount_resp,
+			receipt_number, trans_dt, cc_exp, pos_entry_pin,
+			pos_condition_code, retrieval_reference_num,avs_data)
+			VALUES(1,9998,2,DATE_SUB(NOW(), INTERVAL 5 DAY),
+			'2013-05-01','{$submit_dt}', '', '',
+			'', '', '', 0.00,
+			0.00, '{$iso->getMTI()}', '{$pri_acct_no}', '{$cc_last_four}',
+			'{$card_type}', '{$processing_code}', '{$trans_amount}', '',
+			'{$trans_id}', NOW(), '{$cc_exp}', '{$pos_entry_pin}',
+			'{$pos_condition_code}', '', '{$avs_data}')
+			";
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Query to insert trans: '.print_r($queries, true));
+		return $queries;
+	}
+	
+	public static function originalTransForRefund($id) {
+		$q = 'SELECT id, batch_id, terminal_id, schedule_date,
+                                user_name, site_id, frozen,
+                                pkg_description, uv, msg_type,
+                                pri_acct_no, cc_last_four, cc_type,
+                                trans_amount, cc_exp, pos_entry_pin,
+                                pos_condition_code, response_code, avs_response
+                        FROM fd_draft_data
+                        WHERE id ='.$id;
+		return $q;
+
 	}
 }
 
