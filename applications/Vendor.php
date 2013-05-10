@@ -225,7 +225,7 @@ class Vendor extends AppInstance{
 		
 		// get an intial connection
 		$svr_config = new Daemon_ConfigSection(array('servers'=>"{$this->vendorhost}", 'port'=>"{$this->vendorport}"));
-		$this->vendorclient = VendorClient::getInstance($svr_config);
+		$this->vendorclient = VendorClient::getInstance($svr_config, $this);
 		
 		// get our MySQL connection. All classes that use this appInstance can
 		// get the same MySQL connection without needing the login credentials
@@ -447,12 +447,54 @@ class Vendor extends AppInstance{
 	}
 	
 	/**
-	 * createResponseMsg() - process our ISO object into a complete ISO8583 Object
-	 * @param ISO8583Trans $msg - the returned TCP data
-	 * @param Array $tr - DB record of the original transaction
+	 * createResponseMsg() - create complete ISO8583Trans object from the returned message data
+	 * @param ISO8583Trans $msg - the empty ISO8583 trans object
+	 * @param Array $sr - the DB record from the original transaction.
+	 * @return ISO8583Trans
+	 * @throws Exception
 	 */
 	public function createResponseMsg($msg, $tr){
-		Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' called with arguments: $msg:'.print_r($msg, true).', $tr:'.print_r($tr, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' called with arguments: $msg:'.print_r($msg, true).', $tr:'.print_r($tr, true));
+		// add data from the original trans into our new object
+		try{
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Original trans id:'.$tr['id']);	
+			$msg->original_trans_id = $tr['id'];
+			$msg->original_trans_amount = $tr['trans_amount'];
+			if (self::$decrypt_data) {
+				$data = self::decrypt_data($tr['pri_acct_no']);
+				if (is_array($data)){
+					throw new Exception('Error decrypting account data! Error:'.$data['error_msg']);
+				}else {
+					// save our encrypted account number
+					$msg->encrypted_acct_no = $tr['pri_acct_no'];
+					$msg->pri_acct_no = $data;
+					$msg->credit_card = new CreditCard($msg->pri_acct_no);
+					$msg->card_type = $msg->credit_card->card_type;
+				}
+			} else {
+				// pull the card type from the original trans query data
+				switch($tr['cc_type']) {
+					case 'VS':
+						$msg->card_type = 'Visa';
+						break;
+					case 'MC':
+						$msg->card_type = 'Master Card';
+						break;
+					case 'AX':
+						$msg->card_type = 'American Express';
+						break;
+					case 'DS':
+						$msg->card_type = 'Discover';
+						break;
+					default:
+						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$tr['user_name']}, has unknown card type: {$tr['cc_type']}");
+				}
+			}
+
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
+		}catch(Exception $e){
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Exception caught trying to update transaction with original trans data! Exception:'. $e);
+		}
 		return $msg;
 	}
 	
@@ -526,9 +568,10 @@ class Vendor extends AppInstance{
 								$app->connect(function() use ($app){
 									$app->checkOutboundQueue($app);
 								});
-								
+								Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'After the $app->connect() call in createISOandSend(). About to check for callback');
 								// execute our callback (if any)
 								if (is_callable($cb)) {
+									Vendor::logger(Vendor::LOG_LEVEL_DEBUG,' About to call user function at '.__FILE__.':'.__LINE__);
 									call_user_func($cb);
 								}
 							}catch(Exception $e){
@@ -650,6 +693,41 @@ class Vendor extends AppInstance{
 	}
 	
 	/**
+	 * createRefundTransaction() - pass in a record id and create and send a ISO8583 to refund it
+	 * @param Int $orig_trans_id - DB record id that we want to refund
+	 * @return Null
+	 */
+	public function createRefundTransaction($orig_trans_id) {
+			$app = $this;
+
+			// get our query to retrieve the original transaction info
+			$q = SQL::originalTransForRefund($orig_trans_id);
+			$app->executeQuery($app, $q, function($result) use($app, $orig_trans_id){
+				// check our response_code; do not refund a declined transaction
+				if ($result[0]['response_code']!== '00') {
+					Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Transaction ('.$orig_trans_id.') not refunded because it was declined');
+					return;
+				}
+				$orig_trans_row = $result[0];
+
+				$q = "UPDATE fd_draft_data SET refunded = true WHERE id = {$result[0]['id']}";
+				$app->executeQuery($app, $q, function($result) use($app, $q, $orig_trans_row){
+					if ($result !== 1) {
+						Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Incorrect number of rows updated for query:'.$q);
+						return;
+					}
+
+					$q = SQL::buildQueryForRefund($orig_trans_row, $this->trans_table, 'RECURRING_BILLING');
+					$app->executeQuery($app, $q, function($result) use($app,$q){
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Refund transaction created. About to send!');
+						$app->createISOandSend($app, null, $result, null, null);
+					});
+				});
+
+			});
+        }
+
+	/**
 	 * createJobFromQuery() - execute the given query and store the results in
 	 * the request->job with given name
 	 * @param RealTimeTrans $app - the main appInstance to get the MySQL Conn from
@@ -689,32 +767,7 @@ class Vendor extends AppInstance{
 					} 
 					
 					// create a $result variable. We set it to real values if our query succeeds
-					$result = '';
-					
-					// evaluate whether we have an INSERT or SELECT query
-					// set our $result based on the query type
-					$qtype = substr($q,0,strpos($q, ' '));
-					switch(trim(strtoupper($qtype))){
-						case 'INSERT':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the insertId value for job('.$name.') result!');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
-							$result = $sql->insertId;
-							break;
-						case 'SELECT':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the resultRows value for job('.$name.') result!');
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' result contains '.count($sql->resultRows). ' entries');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
-							$result = $sql->resultRows;
-							break;
-						case 'UPDATE':
-							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the affectedRows value for job('.$name.') result!');
-							//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
-							$result = $sql->affectedRows;
-							break;
-						default:
-							Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unknown query type:'.$qtype);
-							$result = $sql->errmsg;
-					}
+					$result = self::determineSQLResult($q, $sql);
 
 					// call any callback and pass it the $result from this job
 					if(is_callable($cb)) {
@@ -785,15 +838,12 @@ class Vendor extends AppInstance{
 	 * executeQuery() - get a MySQL connection and execute a query against the DB
 	 * @param Vendor $app - our main application object
 	 * @param String $query - the SQL to execute against the DB
-	 * @param ISO8583Trans $msg - the transaction message object
-	 * @param ComplexJob $job - object that stores our jobs
-	 * @param String $name - job name to save results to
-	 * @return bool - was the MySQL connection successful
+	 * @param Callable $cb - function to execute after the query is complete
 	 * @note This does not return a status for the query itself
 	 */
-	public function executeQuery($app, $query) {
+	public function executeQuery($app, $query, $cb=null) {
 		// get a connection to our MySQL database
-		return $app->sql->getConnection(function($sql, $success) use ($query, $app) {
+		return $app->sql->getConnection(function($sql, $success) use ($query, $app, $cb) {
 			// the MySQL getConnection callback is passed the MySQL object and a boolean
 			// success flag
 
@@ -805,12 +855,18 @@ class Vendor extends AppInstance{
 			}
 
 			// execute a query on our sql object
-			$sql->query($query, function($sql, $success) use ($query) {
+			$sql->query($query, function($sql, $success) use ($query, $cb) {
 				if (!$success) {
 					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error executing query:'.$query);
+					return;
 				}
-				// return the results of this query
-				return $sql;
+				$result = self::determineSQLResult($query, $sql);
+				// execute our callback or return the results of this query
+				if (is_callable($cb)) {
+					call_user_func($cb, $result);
+				} else {
+					return $sql;
+				}
 			});			
 				
 		});
@@ -919,25 +975,27 @@ class Vendor extends AppInstance{
 	
 	/**
 	 * processDraft() - pull a single transaction from the DB and send it off
+	 * this does not use the createJobFromQuery() method because it pulls the
+	 * same query many times. The job name would end up being too long
 	 */
 	public function processDraft(){
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__METHOD__.' called');
 		$app = $this;
 		$today = date('Y-m-d');
 		$q = SQL::buildSubmitDraftSQL($today);
-		$app->createJobFromQuery($app, null, 'submit_draft', $q, false, 
-				function($result) use($app, $today){
+		$app->executeQuery($app, $q, function($result) use($app, $today){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing the call back for processDraft() job');
 			
 			if (count($result) > 0) {
 				// send off the first transaction
-				$id = array_shift($result);
-				$app->createISOandSend($app, null, $id, function() use ($app){
+				$trans_row = array_shift($result);
+				$app->createISOandSend($app, null, $trans_row['id'], null, null, function() use ($app){
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Inside the createISOandSend() CB from processDraft()');
 					$app->processDraft();
 				});
 			} else {
 				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'No more transactions to process for '.$today.' in '.__METHOD__.':'.__LINE__);
-			}	
+			}
 		});
 	}
 	
@@ -1168,6 +1226,41 @@ class Vendor extends AppInstance{
 			deafult: 
 				return '[UNKNOWN LVL ('.$level.')] ';
 		}
+	}
+	
+	/**
+	 * determineSQLResult() - look at the query and determine what should be returned
+	 * @param String $q - the query to parse
+	 * @param MySqlClient $sql - the result from the query
+	 * @return Mixed
+	 */
+	public static function determineSQLResult($q, $sql) {
+		$result = '';
+		// evaluate whether we have an INSERT or SELECT query
+		// set our $result based on the query type
+		$qtype = substr($q,0,strpos($q, ' '));
+		switch(trim(strtoupper($qtype))){
+			case 'INSERT':
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the insertId value for result!');
+				//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->insertId:'.print_r($sql->insertId, true).' q:'.$q);
+				$result = $sql->insertId;
+				break;
+			case 'SELECT':
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the resultRows value for result!');
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' result contains '.count($sql->resultRows). ' entries');
+				//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->resultRows:'.print_r($sql->resultRows, true));
+				$result = $sql->resultRows;
+				break;
+			case 'UPDATE':
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' using the affectedRows value for result!');
+				//Vendor::log(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$sql->affectedRows:'.print_r($sql->affectedRows, true).' q:'.$q);
+				$result = $sql->affectedRows;
+				break;
+			default:
+				Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Unknown query type:'.$qtype);
+				$result = $sql->errmsg;
+		}
+		return $result;
 	}
 	
 	// </editor-fold>
