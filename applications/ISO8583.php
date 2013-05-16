@@ -451,6 +451,7 @@ class ISO8583 {
 		if ($bit === 35) {
 			$result = $this->_packBit35Data($data);
 		} else {
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit '.$bit.', $data_element:'.print_r($data_element, true).', $data:'.$data);
 			//numeric value
 			if ($data_element[0]=='n' && is_numeric($data) && strlen($data)<=$data_element[1]) {
 				$data	= str_replace(".", "", $data);
@@ -477,7 +478,6 @@ class ISO8583 {
 			if ($data_element[0]=='bcd' && is_numeric($data) && strlen($data)<=$data_element[1]) {
 				// remove all decimal points
 				$data       = str_replace(".", "", $data);
-				$prefix = "";
 
 				// fixed length value
 				if ($data_element[2]==0) {
@@ -495,6 +495,7 @@ class ISO8583 {
 				}
 
 				//echo "\$data: {$data}\n";
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit:'.$bit.' BCD data using prefix:'.$prefix.', and data:'.$data);
 
 				// create our BCD data value
 				$result = $prefix.$this->convertDEC2BCD($data);
@@ -505,7 +506,6 @@ class ISO8583 {
 				($data_element[0]=='an' && ctype_alnum($data) && strlen($data)<=$data_element[1]) ||
 				($data_element[0]=='z' && strlen($data)<=$data_element[1]) ||
 				($data_element[0]=='ans' && strlen($data)<=$data_element[1])) {
-
 				//fixed length
 				if ($data_element[2]==0) {
 					// check data length
@@ -513,20 +513,22 @@ class ISO8583 {
 						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
 					}
 					$ts = sprintf("%". $data_element[5].$data_element[1] ."s", $data);
-					$result	= $ts;
+					$data	= $ts;
 					//echo __LINE__."\$result: {$result}\n";
 				} 
 				//dynamic length
 				else {
 					// prepend a size prefix, if required
-					$prefix = '';
 					if (array_key_exists(3, $data_element) && strlen($data_element[3]) > 0) {
 						switch($data_element[3]) {
 							case 'bcd':
 								// create our prefix bytes using the size for this data
 								$prefix = $this->_calculateBCDPrefix($data_element, $data);
 								//$prefix = $this->convertDEC2BCD(str_pad(strlen($data),$data_element[4],'0', STR_PAD_LEFT));
+								//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit '.$bit.' using BCD size prefix (HEX):'.bin2hex($prefix));
 								break;
+							default:
+								//Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Bit '.$bit.' has unknown size prefix type:'.$data_element[3]);
 						}
 					}
 					if (strlen($prefix.$data) <= ($data_element[1]+$data_element[4])) {
@@ -534,11 +536,15 @@ class ISO8583 {
 						// This should pad the value out to the proper length
 						// an => left pad with zero
 						// ans => right pad with space
-						$result = $prefix.$data;
+						//$result = $prefix.$data;
 					} else {
 						throw new Exception("Data is longer than max! Data:{$data}, element:".print_r($data_element, true));
 					}
 				}
+				$result = $prefix.$data;
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit:'.$bit.' ALPHA data using prefix:'.$prefix.', and data:'.$data);
+			} else {
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit '.$bit.' not of alpha type! '.print_r($data_element, true));
 			}
 
 			//bit value
@@ -554,7 +560,7 @@ class ISO8583 {
 				}
 			}
 		}
-
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit:'.$bit.' _packElement() returns (HEX):'.bin2hex($result));
         return $result;
     }
 	
@@ -590,8 +596,8 @@ class ISO8583 {
 		for($i = 0, $stop = count($bs); $i < $stop; $i+=2) {
 			$return .= pack('C', bindec($bs[$i].$bs[$i+1]));
 		}
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$bs[]:'.print_r($bs, true));
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$da[]:'.print_r($da, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$bs[]:'.print_r($bs, true));
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$da[]:'.print_r($da, true));
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, "Creating BCD prefix for data of length:".strlen($return));
 		$prefix = $this->_calculateBCDPrefix($this->DATA_ELEMENT[35], $d);
 		return $prefix.$return;
