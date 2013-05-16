@@ -52,7 +52,7 @@ class RealTimeTransaction extends Transaction {
 		array('Trans Date', array('trans_date', 'text', 10)),
 		array(array('CC Number', 'Exp(YYMM)'), array(array('cc_number', 'text',20), array('cc_exp', 'text',4))),
 		array(array('AVS Data', 'Response'), array(array('avs_data','text', 30), array('avs_response','text', 2))),
-		array(array('Transaction Type','Processing Code'), array(array('type_name', 'text',20),array('processing_code', 'text',7))),
+		array(array('Transaction Type','Processing Code'), array(array('type_name', 'text',30),array('processing_code', 'text',7))),
 		array(array('POS Entry Pin', 'Condition Code'), array(array('pos_entry_pin', 'text',4),array('pos_condition_code', 'text',4))),
 		array(array('Response Code', 'Text', 'Refunded'), array(
 				array('response_code', 'text',2), array('response_text', 'text',22),array('refunded', null, 2)
