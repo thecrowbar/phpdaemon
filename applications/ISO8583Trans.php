@@ -18,6 +18,9 @@ class ISO8583Trans extends ISO8583{
 	const TRANS_TYPE_DIRECT_MARKETING		= 4;
 	const TRANS_TYPE_REVERSAL				= 5;
 	const TRANS_TYPE_TIMEOUT_REVERSAL		= 6;
+	const TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK	= 7;
+	const TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK	= 8; // not supported for AX
+	const TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC	= 9; // only supported for MC and DS
 	
 	// these are messages classes Auth, Auth&Cap, Cap only
 	const MSG_CLASS_AUTH_N_CAP				= 1;
@@ -193,6 +196,7 @@ class ISO8583Trans extends ISO8583{
 			
 			// add our tables in the bit 63 data
 			// Refund and timeout reversal transactions have no bit 63 tables
+			// reversal transactions have only bit63->table14
 			if ($this->_trans_type !== self::TRANS_TYPE_REFUND && 
 					$this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
 				// refunds have no bit 63 tables
@@ -205,8 +209,48 @@ class ISO8583Trans extends ISO8583{
 	private function _addDataToISO() {
 		$this->addMTI($this->_trans_row['msg_type']);
 		$this->addData(2, $this->_trans_row['pri_acct_no']);
+		
+		//<editor-fold defaultstate="collapsed" desc="Bit3 Processing Code">
+		// Bit 3 must be 20000 for REFUND type transactions
+		if ($this->_trans_type === self::TRANS_TYPE_REFUND){
+			if ($this->_trans_row['processing_code'] !== '200000') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong processing code ('.$this->_trans_row['processing_code'].'). Correcting');
+				$this->_trans_row['processing_code'] = '200000';
+			}
+		} else if ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING) {
+			if ($this->_trans_row['processing_code'] !== '500000') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong processing code ('.$this->_trans_row['processing_code'].'). Correcting');
+				$this->_trans_row['processing_code'] = '500000';
+			}
+		} else if ($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK ||
+				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK ||
+				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC ) {
+			if ($this->_trans_row['processing_code'] !== '300000') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong processing code ('.$this->_trans_row['processing_code'].'). Correcting');
+				$this->_trans_row['processing_code'] = '300000';
+			}
+		} else {
+			if ($this->_trans_row['processing_code'] !== '000000') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong processing code ('.$this->_trans_row['processing_code'].'). Correcting');
+				$this->_trans_row['processing_code'] = '000000';
+			}
+		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Transaction ('.$this->_trans_id.') using processing code:'.$this->_trans_row['processing_code']);
 		$this->addData(3, $this->_trans_row['processing_code']);
+		//</editor-fold>
+		
+		//<editor-fold defaultstate="collapsed" desc="Bit4 Amount (only zero dollar checked)">
+		
+		if ($this->_trans_row['trans_amount'] === '0.00' &&
+				($this->_trans_type !== self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK ||
+				$this->_trans_type !== self::TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK ||
+				$this->_trans_type !== self::TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC )) {
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong trans_amount ('.$this->_trans_row['trans_amount'].').');
+		} 
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Transaction ('.$this->_trans_id.') using amount:'.$this->_trans_row['trans_amount']);
 		$this->addData(4, $this->_trans_row['trans_amount']*100);
+		//</editor-fold>
+		
 		$this->addData(11, $this->_trans_row['receipt_number']);
 		// The submit_dt field in the database is set just before the data
 		// is passed to this class for constructing the ISO message. It is
@@ -215,39 +259,75 @@ class ISO8583Trans extends ISO8583{
 		$this->addData(13, date('md',strtotime($this->_trans_row['submit_dt']))); // Ex 1003 for Oct 3rd
 		$this->addData(14, $this->_trans_row['cc_exp']); // this is YYMM format
 		$this->addData(18, $this->_trans_row['merchant_category_code']);
+		
+		//<editor-fold defaultstate="collapsed" desc="Bit22 POS Entry Mode + PIN Capability">
+		// Bit 22 must be set to a known value for retail transactions
+		if($this->_trans_type === self::TRANS_TYPE_RETAIL 
+				&& substr($this->_trans_row['pos_entry_pin'],-1) === '0') {
+			$msg = 'Retail transactions require a know PIN capability';
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, $msg);
+			throw new Exception($msg);
+		}
 		$this->addData(22, $this->_trans_row['pos_entry_pin']);
+		//</editor-fold>
+		
+		// NII is always 001
 		$this->addData(24, $this->_trans_row['network_international_id']);
 		
+		//<editor-fold defaultstate="collapsed" desc="Bit25 POS Condition Code">
 		// Bit 25 needs to be '04' for recurring transaction
 		if ($this->_trans_type == self::TRANS_TYPE_RECURRING_BILLING) {
-			$this->addData(25, '04');
-		} else{
-			$this->addData(25, $this->_trans_row['pos_condition_code']);
+			if ($this->_trans_row['pos_condition_code'] !== '04') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS condition code ('.$this->_trans_row['pos_condition_code'].'). Correcting');
+				$this->_trans_row['pos_condition_code'] = '04';
+			}
+		} else if ($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK){
+			if ($this->_trans_row['pos_condition_code'] !== '52') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS condition code ('.$this->_trans_row['pos_condition_code'].'). Correcting');
+				$this->_trans_row['pos_condition_code'] = '52';
+			}
+		}else if($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK){
+			if ($this->_trans_row['pos_condition_code'] !== '51') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS condition code ('.$this->_trans_row['pos_condition_code'].'). Correcting');
+				$this->_trans_row['pos_condition_code'] = '51';
+			}
+		} else if ($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC) {
+			// only supported for MC and DS
+			//throw new Exception('What processing code to use here?');
+			if ($this->_trans_row['pos_condition_code'] !== '51') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS condition code ('.$this->_trans_row['pos_condition_code'].'). Correcting');
+				$this->_trans_row['pos_condition_code'] = '51';
+			}
 		}
+		$this->addData(25, $this->_trans_row['pos_condition_code']);
+		//</editor-fold>
 		
+		//<editor-fold defaultstate="collapsed" desc="Bit31 Acquirer Reference Data (only for Host Draft Capture)">
 		// bit 31 is set to 1 if the merchant is host_draft_capture (our recurring billing are set this way)
 		// the query to pull in the data for a single transaction uses the fd_merchant_info.host_capture
 		// boolean field for the acquirer_reference_data value
 		// and the trans type is not refund
-		if ($this->_trans_type !== self::TRANS_TYPE_REFUND){
-			$this->addData(31, $this->_trans_row['acquirer_reference_data']);
-		}else {
-			// refunds use the non-standard bit32===2
-			$this->addData(31, '2');
+		if ($this->_trans_type === self::TRANS_TYPE_REFUND ||
+				$this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL ||
+				$this->_trans_type === self::TRANS_TYPE_REVERSAL ){
+			if ($this->_trans_row['acquirer_reference_data'] !== '2') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong acquirer_reference_data code ('.$this->_trans_row['acquirer_reference_data'].'). Correcting');
+				$this->_trans_row['acquirer_reference_data'] = '2';
+			}
+		}else if ($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK ||
+				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK ||
+				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC){
+			if ($this->_trans_row['acquirer_reference_data'] !== '0') {
+				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong acquirer_reference_data code ('.$this->_trans_row['acquirer_reference_data'].'). Correcting');
+				$this->_trans_row['acquirer_reference_data'] = '0';
+			}
+			// Zero Dollar AVS & CVV/CVC2 checks require host_capture flag to be auth only
 		}
-		
-		// $0.00 AVS/CVV/CVC2 verify transactions use bit31 === 0 (auth only)
-		// we also need to set the processing_code (bit3) correctly
-		if ($this->getDataForBit(4, true) === '0') {
-			$this->addData(31,'0');
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Changing bit 31 data to "0" for zero dollar AVS/CVV/CVC2 check');
-			$this->addData(3, '300000');
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Changing bit 3 data to "300000" for zero dollar AVS/CVV/CVC2 check');
-		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Bit4 data:"'.$this->getDataForBit(4, true).'"');
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Bit4 data type:"'.Vendor::get_type($this->getDataForBit(4, true)).'"');
-		}
-		
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Transaction ('.$this->_trans_id.') using bit31 data:'.$this->_trans_row['acquirer_reference_data']);
+		$this->addData(31, $this->_trans_row['acquirer_reference_data']);
+		//</editor-fold>
+
+		//<editor-fold defaultstate="collapsed" desc="Bit35 Track 2 Data">
 		// Bit 35 is the track2 data. It is only used for real-time transactions with swipe
 		if ($this->_trans_type === self::TRANS_TYPE_RETAIL &&
 				array_key_exists('track2', $this->_trans_row) &&
@@ -256,7 +336,9 @@ class ISO8583Trans extends ISO8583{
 			$t = new Track2Data($this->_trans_row['track2']);
 			$this->addData(35, $t->pan.'='.$t->exp.$t->svc_code.$t->dd);
 		}
+		//</editor-fold>
 
+		//<editor-fold defaultstate="collapsed" desc="Bit37 Retrieval Reference Number (DB Record id)">
 		// 2013-04-17 Bit 37 is now the DB record ID for the original 0100
 		// transaction. 0400 and followup 0100 (we don't use these) use the 
 		// bit 37 data from the first transaction. The original bit37 data
@@ -269,15 +351,10 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(37, $this->_trans_id);
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Using _trans_id:'.$this->_trans_id.' for Bit 37 value!');
 		}
+		//</editor-fold>
 		
-//		if (strlen($this->_trans_row['retrieval_reference_num']) < 1) {
-//			// if we have no retrieval reference number, then use the same one
-//			// as used for receipt number (bitmap 11)
-//			$this->addData(37, $this->_trans_row['receipt_number']);
-//		} else {
-//			$this->addData(37, $this->_trans_row['retrieval_reference_num']);
-//		}
-		
+
+		//<editor-fold defaultstate="collapsed" desc="Bit38 Authorization Identification Response">
 		// bit 38 is authorization identification response; submitted for reversals
 		// bit 39 is the response code; submitted only on reversal
 		if ($this->_trans_type === self::TRANS_TYPE_REVERSAL) {
@@ -285,20 +362,25 @@ class ISO8583Trans extends ISO8583{
 			// 2013-04-19 per Manana bit39 is not included in FULL AUTH REVERSAL
 			//$this->addData(39, $this->_trans_row['response_code']);
 		}
+		//</editor-fold>
 		
 		
 		
 		$this->addData(41, $this->_trans_row['terminal_id']);
 		$this->addData(42, $this->_trans_row['merchant_id']);
 		
+		//<editor-fold defaultstate="collapsed" desc="Bit44 AVS Response (only for reversals)">
 		// bit 44 is only sent with a refund transaction
 		if($this->_trans_type == self::TRANS_TYPE_REFUND 
 				&& array_key_exists('avs_response', $this->_trans_row)
 				&& strlen($this->_trans_row['avs_response']) > 0) {
 			$this->addData(44, $this->_trans_row['avs_response']);
 		}
+		//</editor-fold>
 		
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'ISO with db ID:'.$this->_trans_id.' is of type:'.$this->_trans_type);
+		
+		//<editor-fold defaultstate="collapsed" desc="Bit48 Address Verification Service (AVS) data">
 		// bit 48 is AVS data
 		if ($this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING) {
 			$this->avs_required = true;
@@ -324,6 +406,8 @@ class ISO8583Trans extends ISO8583{
 //			$this->addData(48,254021); // this is system initiated due to timeout
 			// 2013-04-17 Bit 52 is only for debit
 			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
+		}else if($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK){
+			$this->avs_required = true;
 		}else {
 			// if this a real time (retail) transaction and AVS data is present,
 			// then we send it along
@@ -355,6 +439,7 @@ class ISO8583Trans extends ISO8583{
 			}
 			
 		}
+		//</editor-fold>
 		
 		$this->addData(59, $this->_trans_row['merchant_zip_code']);
 		
@@ -670,13 +755,16 @@ class ISO8583Trans extends ISO8583{
 			// field[3] = pad direction (if given)
 			foreach($tbl14_fields as $field) {
 				if ($this->getMTI() == self::MTI_0100) {
+					// for the initial message, we just fill the field with the correct value
 					$$field[0] = str_pad('',$field[1],$field[2]);
 				} else {
-					if (strlen($tbl14_row[$field[0]]) < $field[1]){
+					if (strlen($tbl14_row[$field[0]]) < $field[1]){ //compares length of data from database against the passed in value
 						$str_pad = (array_key_exists(3,$field)) ? $field[3]:STR_PAD_RIGHT;
 						$$field[0] = str_pad($tbl14_row[$field[0]], $field[1], $field[2], $str_pad);
+						//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$table14_row['.$field[0].'] is shorted than $field[1]('.$field[1].')');
 					} else	if (strlen($tbl14_row[$field[0]]) == $field[1]) {
 						$$field[0] = $tbl14_row[$field[0]];
+						//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$table14_row['.$field[0].']('.$tbl14_row[$field[0]].') length matches $field[1]('.$field[1].')');
 					} else {
 						throw new Exception("Table 14 {$field[0]} value wrong length! value:{$tbl14_row[$field[0]]}, trans_id:'{$this->_trans_id}");
 					}
@@ -698,6 +786,8 @@ class ISO8583Trans extends ISO8583{
 			foreach($tbl14_fields as $field){
 				$tbl14_str .= $$field[0];
 			}
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$table14_row:'.print_r($tbl14_row, true));
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table14 String:'.$tbl14_str);
 			return $tbl14_str;
 			
 		}
