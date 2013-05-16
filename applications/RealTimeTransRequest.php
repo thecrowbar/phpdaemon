@@ -373,7 +373,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		//$q = $app->view_trans_query;
 		$min_trans_id = (array_key_exists('min_trans_id', $req->req_params))?$req->req_params['min_trans_id']:0;
 		$after_date = (array_key_exists('after_date', $req->req_params))?$req->req_params['after_date']:'1970-01-01';
-		$q = SQL::viewAllTransQuery($min_trans_id, $after_date);
+		$q = SQL::viewAllTransQuery($min_trans_id, $after_date, $app->trans_table);
 		$app->createJobFromQuery($app, $req, $min_trans_id.'-view_trans', $q, true);
 	}
 	
@@ -385,7 +385,7 @@ class RealTimeTransRequest extends HTTPRequest{
 	public function createTransDetailJob($id) {
 		$app = $this->appInstance;
 		$req = $this;
-		$q = SQL::singleTransDetailQuery($id);
+		$q = SQL::singleTransDetailQuery($id, $app->trans_table);
 		$app->createJobFromQuery($app, $req, $id.'-trans_detail', $q, true);
 	}
 	
@@ -398,13 +398,13 @@ class RealTimeTransRequest extends HTTPRequest{
 	public function createReversalTransJob($id, $type = ISO8583Trans::TRANS_TYPE_REVERSAL) {
 		$app = $this->appInstance;
 		$req = $this;
-		$q = SQL::singleTransDetailQuery($id);
+		$q = SQL::singleTransDetailQuery($id, $app->trans_table);
 		$app->createJobFromQuery($app, $req, $id.'-reversal_trans', $q, false, function($result) use($app, $req, $type, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We are inside the createReversalTransJob() job callback!');
 			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Need to build a reversal DB record from data:'.print_r($result, true));
 			$orig_tr = $result[0];
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Reversal trans original receipt_number:'.$orig_tr['receipt_number']);
-			$q = SQL::buildQueryForReversal($result[0], $type);
+			$q = SQL::buildQueryForReversal($result[0], $type, $app->trans_table);
 			$app->createJobFromQuery($app, $req, $id.'-reversal_iso', $q, false, function($result) use($app, $req, $orig_tr){
 				// get our queries to fill the extra tables
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the reversal_iso callback using $result:"'.print_r($result, true).'"');
@@ -430,7 +430,7 @@ class RealTimeTransRequest extends HTTPRequest{
 	public function createRefundTransJob($id) {
 		$app = $this->appInstance;
 		$req = $this;
-		$q = SQL::refundOriginalTransQuery($id);
+		$q = SQL::refundOriginalTransQuery($id, $this->appInstance->trans_table);
 		$app->createJobFromQuery($app, $req, $id.'-refund_trans', $q, false, 
 				function($result) use($app, $req, $id){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the refund_trans job callback $result:'.print_r($result, true));
