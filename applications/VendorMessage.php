@@ -21,7 +21,8 @@ class VendorMessage {
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Attempting to decrypt our account number!');
 			$result = Vendor::decrypt_data($trans_row['pri_acct_no']);
 			if (is_array($result)) {
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$db_row used:'.print_r($db_row[0], true));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$trans_row used:'.print_r($trans_row, true));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Vendor::decrypt_data():'.print_r($result, true));
 				// there was some sort of error
 				throw new Exception('Unable to decrypt account number! Error:'.$result['error_msg']);
 			} else {
