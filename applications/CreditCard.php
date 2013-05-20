@@ -198,8 +198,43 @@ class CreditCard {
 	 }
 
 	 // If the total mod 10 equals 0, the number is valid
-	 return ($total % 10 == 0) ? TRUE : FALSE;
+	 if ($total % 10 == 0)
+		 return TRUE;
+	 else {
+		 // test again with the last number trimmed
+		 return $this->luhn_check2($number);
+	 }
+	 //return ($total % 10 == 0) ? TRUE : FALSE;
 
+   }
+   
+   function luhn_check2($number) {
+	   
+	 // Strip any non-digits (useful for credit card numbers with spaces and hyphens)
+	 $number=substr($number,0,-1);
+
+	 // Set the string length and parity
+	 $number_length=strlen($number);
+	 $parity=$number_length % 2;
+
+	 // Loop through each digit and do the maths
+	 $total=0;
+	 for ($i=0; $i<$number_length; $i++) {
+	   $digit=$number[$i];
+	   // Multiply alternate digits by two
+	   if ($i % 2 == $parity) {
+		 $digit*=2;
+		 // If the sum is two digits, add them together (in effect)
+		 if ($digit > 9) {
+		   $digit-=9;
+		 }
+	   }
+	   // Total up the digits
+	   $total+=$digit;
+	 }
+
+	 // If the total mod 10 equals 0, the number is valid
+	 return ($total % 10 == 0) ? TRUE : FALSE;
    }
 }
 
