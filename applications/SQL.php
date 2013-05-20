@@ -67,16 +67,24 @@ class SQL {
 		switch($msg->getMTI(true)) {
 			case "0110":
 				$msg_type = '0100';
+				$id_conditions = "(fdt.id = {$msg->retrieval_reference_number} 
+						AND fdt.receipt_number = {$msg->receipt_number})";
 				break;
 			case "0210":
 				$msg_type = '0200';
 				break;
 			case "0410":
 				$msg_type = '0400';
+				$id_conditions = "(fdt.id = {$msg->retrieval_reference_number} 
+						OR master_trans_id = {$msg->retrieval_reference_number}
+						OR fdt.receipt_number = {$msg->receipt_number})";
 				break;
 			default:
 				$msg_type = '%';
 				Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Unknown MTI:'.$msg->getMTI(true));
+				$id_conditions = "(fdt.id = {$msg->retrieval_reference_number} 
+						OR master_trans_id = {$msg->retrieval_reference_number}
+						OR fdt.receipt_number = {$msg->receipt_number})";
 		}
 		
 		// order by ASC to get the last submitted trans; order by DESC to get the
@@ -95,13 +103,13 @@ class SQL {
 				FROM {$trans_table} fdt
 				LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
 				LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
-				WHERE (fdt.id = {$msg->retrieval_reference_number} 
-						OR master_trans_id = {$msg->retrieval_reference_number}
-						OR fdt.receipt_number = {$msg->receipt_number})
+				WHERE {$id_conditions}
 					AND fdt.msg_type LIKE '{$msg_type}'
 					AND ti.terminal_id = {$msg->terminal_id}
-					ORDER BY submit_dt {$order_by}
-					LIMIT 1";
+					AND (fdt.auth_submit_dt <> '0000-00-000 00:00:00' OR
+						fdt.capture_submit_dt <> '0000-00-00 00:00:00')
+					ORDER BY auth_submit_dt {$order_by}
+					LIMIT 10";
 		
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'Query for original trans:'.$query);
 		return $query;
@@ -116,6 +124,8 @@ class SQL {
 	 */
 	public static function buildQueriesForReversal($trans_row, $new_trans_id, $app) {
 		$queries = array();
+		$original_trans_id = $trans_row['id'];
+		$queries[] = "UPDATE fd_trans SET capture_submit_dt = NOW() WHERE id ={$original_trans_id}";
 		switch($trans_row['cc_type']) {
 			case 'VS':
 				// Visa queries
@@ -197,17 +207,19 @@ class SQL {
 			msg_type, pri_acct_no, cc_last_four,
 			cc_type, processing_code, trans_amount,
 			receipt_number, master_trans_id, 
-			trans_dt, cc_exp, pos_entry_pin, retrieval_reference_num,
+			trans_dt, cc_exp, pos_entry_pin, 
 			auth_iden_response, response_code, avs_response,
-			avs_data, response_text, table49_response)
+			avs_data, response_text, table49_response,
+			acquirer_reference_data)
 			VALUES({$type},(SELECT id FROM terminal_info WHERE terminal_id = '{$t['terminal_id']}'), '{$t['customer_site_id']}',
 			'{$t['user_name']}', '{$t['sale_site_id']}', '{$t['sx_order_number']}',
 			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
 			'{$t['cc_type']}', '000000', '{$t['trans_amount']}',
 			'{$t['receipt_number']}', {$t['id']},
-			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}', '{$t['retrieval_reference_num']}', 
+			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}',  
 			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
-			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}')
+			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}',
+			'{$t['acquirer_reference_data']}')
 			";
 		return $q;
 	}
@@ -225,7 +237,7 @@ class SQL {
 			msg_type, pri_acct_no, cc_last_four,
 			cc_type, processing_code, trans_amount,
 			receipt_number,
-			trans_dt, cc_exp, pos_entry_pin, retrieval_reference_num,
+			trans_dt, cc_exp, pos_entry_pin, r
 			auth_iden_response, response_code, avs_response,
 			avs_data, response_text, table49_response)
 			VALUES(5,(SELECT id FROM terminal_info WHERE terminal_id = '{$t['terminal_id']}'), '{$t['customer_site_id']}',
@@ -233,7 +245,7 @@ class SQL {
 			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
 			'{$t['cc_type']}', '009000', '{$t['trans_amount']}',
 			'{$t['receipt_number']}',
-			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}','{$t['retrieval_reference_num']}', 
+			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}',
 			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
 			'4021', '{$t['response_text']}', '{$t['table49_response']}')
 			";
@@ -251,7 +263,7 @@ class SQL {
 	public static function buildSubmitDraftSQL($draft_date, $count_only = false) {
 		// limit the number of transactions at once to less than the total
 		// I have been having major memory consumption issues
-		$trans_limit = 1000;
+		$trans_limit = 10;
 		$select_fields = ' fdd.* ';
 		if ($count_only) {
 			$select_fields = ' COUNT(*) AS trans_count';
@@ -264,7 +276,7 @@ class SQL {
 								AND cdl.approve_user <> ''
 								AND cdl.approve_dt <> '0000-00-00 00:00:00'
 								AND cdl.approve_ip_address <> ''
-								AND fdd.submit_dt = '0000-00-00 00:00:00'
+								AND fdd.auth_submit_dt = '0000-00-00 00:00:00'
 						LIMIT {$trans_limit}";
 		return $query;
 	}
@@ -273,10 +285,28 @@ class SQL {
 	 * updateSubmitDTQuery() - create a query to update the submit_dt of a transaction
 	 * @param Int $id - the DB record ID of the transaction
 	 * @param String $trans_table - the table name that sotres the transaction data
+	 * @param Array $tr - DB record for this transaction
 	 * @return String
 	 */
-	public static function updateSubmitDTQuery($id, $trans_table) {
-		$q = "UPDATE {$trans_table} SET submit_dt = NOW() WHERE id ={$id}";
+	public static function updateSubmitDTQuery($id, $trans_table, $tr) {
+		$dt = $tr['submit_dt'];
+		$sql_fields = '';
+		switch ($tr['acquirer_reference_data']) {
+			case 0:
+				// this is an auth only record
+				$sql_fields = "auth_submit_dt = '{$dt}' ";
+				break;
+			case 1:
+				// this is an and and capture record
+				$sql_fields = "auth_submit_dt = '{$dt}', capture_submit_dt = '{$dt}' ";
+				break;
+			case 2:
+				// this is a capture only record
+				$sql_fields = "capture_submit_dt = '{$dt}' ";
+				break;
+		}
+				
+		$q = "UPDATE {$trans_table} SET {$sql_fields} WHERE id ={$id}";
 		return $q;
 	}
 	
@@ -356,7 +386,7 @@ class SQL {
 		ttl.type_name,
 		mi.merch_cat_code AS merchant_category_code, mi.network_international_id,
 		mi.mid AS merchant_id, mi.zip_code AS merchant_zip_code,
-		mi.host_capture AS acquirer_reference_data,
+		mi.host_capture, -- acquirer_reference_data is now passed straight through and this is the terminal setting
 		ti.terminal_id -- this overwrites the value from the fdt table
 		
 			FROM {$trans_table} fdt
@@ -390,12 +420,18 @@ class SQL {
 		$avs_response = '';
 		$response_text = '';
 		$table49_response = '';
+		$capture = false;
 		
 		if ($msg->dataExistsForBit(38)) {
 			$auth_iden_response = $msg->getDataForBit(38);
 		}
 
 		if ($msg->dataExistsForBit(39)) {
+			// if we do not have bit38 data then this is a capture response
+			if (strlen($auth_iden_response) === 0) {
+				$capture = true;
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Setting response trans('.$msg->original_trans_id.') to capture === true');
+			}
 			$response_code = $msg->getDataForBit(39);
 		}
 
@@ -407,6 +443,7 @@ class SQL {
 			$response_text = $msg->getParsedBit63Table22();
 		}
 		if ($msg->dataExistsForTable(49)) {
+			$capture = false;
 			$table49_response = $msg->getParsedBit63Table49();
 		}
 		//$sql_strings = array($auth_iden_sql, $resp_code_sql, $avs_resp_sql, $resp_text_sql);
@@ -418,6 +455,9 @@ class SQL {
 			avs_response='{$avs_response}', 
 			response_text='{$response_text}', 
 			table49_response = '{$table49_response}' ";
+		if ($capture === true) {
+			$sql_snippet = "capture_response_code='{$response_code}'";
+		}
 
 		$query = "UPDATE {$app->config->sqltable->value} SET {$sql_snippet}
 			WHERE id = {$msg->original_trans_id}";
@@ -425,8 +465,8 @@ class SQL {
 		
 		// <editor-fold defaultstate="collapsed" desc="Table14 Card Specific Queries">
 		// now create query specific to card type based on table14
-		// 0400 Reversal Messages already have these tables created
-		if ($msg->getMTI(true) !== ISO8583Trans::MTI_0400) {
+		// 0410 Reversal Response Messages already have these tables created
+		if ($msg->getMTI() !== ISO8583Trans::MTI_0410 ) {
 			switch($msg->card_type) {
 				case 'Visa' :
 					if ($msg->dataExistsForTable(14)) {
@@ -475,6 +515,8 @@ class SQL {
 					}
 					break;
 				case 'Discover':
+				case 'Diners Club':
+				case 'JCB':
 					if ($msg->dataExistsForTable(14)) {
 						$tbl14 = $msg->getParsedBit63Table14();
 						$query = "INSERT INTO table14_ds
@@ -525,6 +567,8 @@ class SQL {
 				}
 				break;
 			case 'Discover':
+			case 'Diners Club':
+			case 'JCB':
 				if ($msg->dataExistsForTable('DS')) {
 					$tblDS = $msg->getParsedBit63TableDS();
 					$query = "INSERT INTO fd_discover_compliance
@@ -572,9 +616,9 @@ class SQL {
 	 * @return string
 	 */
 	public static function viewAllTransQuery($min_trans_id = 0, $after_date = '1969-12-31', $trans_table){
-		$q = "SELECT fdt.id, fdt.submit_dt, fdt.msg_type, fdt.cc_last_four, 
+		$q = "SELECT fdt.id, fdt.auth_submit_dt, fdt.capture_submit_dt, fdt.msg_type, fdt.cc_last_four, 
 				fdt.cc_type, fdt.processing_code, fdt.trans_amount, fdt.receipt_number, 
-				fdt.cc_exp, fdt.pos_entry_pin, fdt.pos_condition_code, fdt.retrieval_reference_num,
+				fdt.cc_exp, fdt.pos_entry_pin, fdt.pos_condition_code,
 				fdt.auth_iden_response, fdt.response_code, fdt.avs_data, fdt.avs_response,
 				fdt.table49_response, fdt.refunded
 			FROM {$trans_table} fdt
@@ -601,56 +645,62 @@ class SQL {
 	}
 	
 	/**
-	 * buildQueriesForTransInsert() - create a transaction record from an ISO8583
+	 * buildQueryForTransInsert() - create a transaction record from an ISO8583
 	 * object
 	 * @param ISO8583Trans $iso - the ISO object to build a transaction record from
 	 * @param String $trans_table - the DB table that stores transaction data
-	 * @return String[]
+	 * Aparam Array[] $tr - DB record to pull extra info from (original transaction record)
+	 * @return String
 	 */
-	public static function buildQueriesForTransInsert($iso, $trans_table) {
-		$queries = array();
+	public static function buildQueryForTransInsert($iso, $trans_table, $tr) {
 		// get our individual pieces of infor from the transaction
-		$pri_acct_no = $iso->getDataForBit(2, true);
-		if (substr($pri_acct_no,0,1) === '3') {
-			// AmEx card
-			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$trans_id.') is an AmEx. Bit2 length:');
-			$pri_acct_no = substr($pri_acct_no,0,-1);
-		}
-		$cc_last_four = substr($pri_acct_no, -4);
-		$card_type = $iso->credit_card->CreditCardType($pri_acct_no, true);
-		$processing_code = $iso->getDataForBit(3, true);
-		$trans_amount = $iso->getDataForBit(4, true);
+//		$pri_acct_no = Vendor::decrypt_data($tr['pri_acct_no']);
+//		if (is_array($pri_acct_no)) {
+//			Vendor::logger(Vendor::LOG_LEVEL_WARNING, 'Failed to decrypt! '.print_r($pri_acct_no, true));
+//			return '';
+//		}
+//		$iso->credit_card = new CreditCard($pri_acct_no);
+//		if (substr($pri_acct_no,0,1) === '3') {
+//			// AmEx card
+//			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$trans_id.') is an AmEx. Bit2 length:');
+//			$pri_acct_no = substr($pri_acct_no,0,-1);
+//		}
+//		$cc_last_four = $tr['cc_last_four'];
+//		$card_type = $tr['cc_type'];
+//		$processing_code = $iso->getDataForBit(3, true);
+//		$trans_amount = $iso->getDataForBit(4, true);
 		try{
 			$time = $iso->getDataForBit(12, true); // HHMMSS
 			$date = $iso->getDataForBit(13, true); // MMDD
-			$submit_dt = '2013-'.substr($date,0,1).'-'.substr($date,-2).' '.substr($time,0,1).':'.substr($time,1,2).':'.substr($time,-2);
+			$auth_submit_dt = '2013-'.substr($date,0,1).'-'.substr($date,-2).' '.substr($time,0,1).':'.substr($time,1,2).':'.substr($time,-2);
 		}catch(Exception $e) {
-			$submit_dt = '';
+			$auth_submit_dt = '';
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Exception Caught! $e:'.$e);
 		}
-		$cc_exp = $iso->getDataForBit(14, true);
-		$pos_entry_pin = $iso->getDataForBit(22, true);
-		$pos_condition_code = $iso->getDataForBit(25, true);
-		$trans_id = $iso->getDataForBit(37);
-		$avs_data = $iso->getDataForBit(48, true);
-		$queries[] = "INSERT INTO {$trans_table}
+		$mti = $iso->getMTI(true);
+//		$cc_exp = $iso->getDataForBit(14, true);
+//		$pos_entry_pin = $iso->getDataForBit(22, true);
+//		$pos_condition_code = $iso->getDataForBit(25, true);
+//		$trans_id = $iso->getDataForBit(37);
+//		$avs_data = $iso->getDataForBit(48, true);
+		$q = "INSERT INTO {$trans_table}
 			(trans_type, batch_id, terminal_id, create_dt,
-			schedule_date, submit_dt, user_name, site_id, 
+			schedule_date, auth_submit_dt, user_name, site_id, 
 			frozen, pkg_description, uv, draft_amount,
 			tan_tax_amount, msg_type, pri_acct_no, cc_last_four,
 			cc_type, processing_code, trans_amount, amount_resp,
 			receipt_number, trans_dt, cc_exp, pos_entry_pin,
-			pos_condition_code, retrieval_reference_num,avs_data)
-			VALUES(1,9998,2,DATE_SUB(NOW(), INTERVAL 5 DAY),
-			'2013-05-01','{$submit_dt}', '', '',
-			'', '', '', 0.00,
-			0.00, '{$iso->getMTI()}', '{$pri_acct_no}', '{$cc_last_four}',
-			'{$card_type}', '{$processing_code}', '{$trans_amount}', '',
-			'{$trans_id}', NOW(), '{$cc_exp}', '{$pos_entry_pin}',
-			'{$pos_condition_code}', '', '{$avs_data}')
+			pos_condition_code, avs_data)
+			VALUES(1,{$tr['batch_id']},(SELECT id FROM terminal_info WHERE terminal_id = '{$tr['terminal_id']}'),NOW(),
+			'2013-05-01','{$auth_submit_dt}', '{$tr['user_name']}', '{$tr['site_id']}',
+			'{$tr['frozen']}', '{$tr['pkg_description']}', '{$tr['uv']}', {$tr['draft_amount']},
+			{$tr['tan_tax_amount']}, '{$tr['msg_type']}', '{$tr['pri_acct_no']}', '{$tr['cc_last_four']}',
+			'{$tr['cc_type']}', '{$tr['processing_code']}', '{$tr['trans_amount']}', '',
+			'{$tr['receipt_number']}', NOW(), '{$tr['cc_exp']}', '{$tr['pos_entry_pin']}',
+			'{$tr['pos_condition_code']}', '{$tr['avs_data']}')
 			";
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Query to insert trans: '.print_r($queries, true));
-		return $queries;
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Query to insert trans: '.$q);
+		return $q;
 	}
 	
 	public static function originalTransForRefund($id) {
@@ -664,6 +714,27 @@ class SQL {
                         WHERE id ='.$id;
 		return $q;
 
+	}
+	
+	/**
+	 * viewNonSettledTrans() - build the query to view non-settled transactions
+	 * @param String $trans_table - the DB table name that holds the transactions
+	 * @param int $num_trans - how many transactions to view
+	 * @return String
+	 */
+	public static function viewNonSettledTrans($trans_table, $num_trans=1){
+		$q = "SELECT fdt.* 
+			FROM {$trans_table} fdt
+			LEFT JOIN terminal_info ti ON ti.id=fdt.terminal_id
+			LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
+			WHERE mi.host_capture IS FALSE
+				AND fdt.capture_submit_dt = '0000-00-00 00:00:00'
+				AND fdt.auth_submit_dt <> '0000-00-00 00:00:00'
+				AND fdt.acquirer_reference_data = 0
+				AND fdt.response_code = '00'
+				AND fdt.msg_type = '0100'
+			LIMIT {$num_trans}";
+		return $q;
 	}
 }
 
