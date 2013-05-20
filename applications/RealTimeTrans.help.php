@@ -74,10 +74,17 @@
 <body>
 	<div id="content">
 		<h2>Vendor Transaction Processing Help</h2>
+		<?php if ($this->cmd === 'settle_trans') {
+			echo "<h1>Transaction Settlement in progress</h1>\n";
+		}
+		?>
 		
-		<p>There are four main ways to interact with the transaction processing system:</p>
+		
+		<p>There are several ways to interact with the transaction processing system:</p>
 		<ul>
 			<li>View All Transactions: <a href="?cmd=view_all_trans">Test It</a></li>
+			<li>View Non-Settled Transaction: <a href="?cmd=view_non_settled">Test It</a></li>
+			<li>Settle Transactions: <a href="?cmd=settle_trans">Test It</a></li>
 			<li>View Transaction Detail: <a href="?cmd=view_trans_detail&transID=385">Try TransID=385</a> (This requires a transaction ID)</li>
 			<li>Process Transaction: <a href="?cmd=process&transID=386">Try TransID=386</a> This also requires the track2 data, or cvc/cvv2 code data</li>
 			<li>Reverse Transaction: <a href="?cmd=reversal&transID=387">Try TransID=387</a> Create a new reversal transaction from the given transID</li>

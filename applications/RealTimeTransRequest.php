@@ -183,6 +183,9 @@ class RealTimeTransRequest extends HTTPRequest{
 			case 'view_trans_detail':
 				$this->createTransDetailJob($this->transID);
 				break;
+			case 'view_non_settled':
+				$this->createViewNonSettledJob();
+				break;
 			case 'process':
 				$this->createTransRowJob($this->transID);
 				break;
@@ -193,6 +196,11 @@ class RealTimeTransRequest extends HTTPRequest{
 				$this->createRefundTransJob($this->transID);
 				//$this->appInstance->createRefundTransaction($this->transID, null);
 				break;	
+			case 'settle_trans':
+				$this->appInstance->settleTransactions(function()use($req){
+					$req->wakeup();
+				});
+				break;
 		}
 		
 		// run our job
@@ -231,6 +239,9 @@ class RealTimeTransRequest extends HTTPRequest{
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' $this->cmd:"'.$this->cmd.'"');
 		switch($this->cmd){
 			case 'view_all_trans':
+				require($this->trans_view_html);
+				break;
+			case 'view_non_settled':
 				require($this->trans_view_html);
 				break;
 			case 'view_trans_detail':
@@ -313,6 +324,9 @@ class RealTimeTransRequest extends HTTPRequest{
 				case 'view_all_trans':
 					$this->cmd = 'view_all_trans';
 					break;
+				case 'view_non_settled':
+					$this->cmd = 'view_non_settled';
+					break;
 				case 'reversal':
 					$req_values[] = 'transID';
 					$this->cmd = 'reversal';
@@ -327,6 +341,13 @@ class RealTimeTransRequest extends HTTPRequest{
 					$req_values[] = 'transID';
 					$this->cmd = 'refund';
 					break;
+				case 'settle_trans':
+					$this->cmd = 'settle_trans';
+					break;
+				default:
+					$this->cmd = 'help';
+					$this->error = 1;
+					$this->err_msg = 'Unknown command received! command:'.$req['cmd'];
 			}
 		} else {
 			// output a simple help page
@@ -375,6 +396,13 @@ class RealTimeTransRequest extends HTTPRequest{
 		$after_date = (array_key_exists('after_date', $req->req_params))?$req->req_params['after_date']:'1970-01-01';
 		$q = SQL::viewAllTransQuery($min_trans_id, $after_date, $app->trans_table);
 		$app->createJobFromQuery($app, $req, $min_trans_id.'-view_trans', $q, true);
+	}
+	
+	public function createViewNonSettledJob(){
+		$app = $this->appInstance;
+		$req = $this;
+		$q = SQL::viewNonSettledTrans($app->trans_table, 100);
+		$app->createJobFromQuery($app, $req, 'view_non_settled', $q, true);
 	}
 	
 	/**
