@@ -6,6 +6,7 @@
  * @author James Crow (jcrow@daemon.io)
  */
 class RealTimeTrans extends Vendor{
+	const PRIVATE_KEY = 'file:///opt/phpdaemon/test-rsa-2048-privkey.pem';
 	
 	/**
 	 * File name to save queries to if $log_queries is set
@@ -31,12 +32,6 @@ class RealTimeTrans extends Vendor{
 	public $pending_req_timer;
 	
 	/**
-	 * The DB table that holds the transactions for this appInstance
-	 *@var String
-	 */
-	public $trans_table_name = 'fd_trans';
-	
-	/**
 	 * Maximum number of transactions to pull at once
 	 * @var Int
 	 */
@@ -57,6 +52,24 @@ class RealTimeTrans extends Vendor{
 	 */
 	public $auto_reversal_timeout = 40;
 	
+	/**
+	 * The DB table name that stores the transaction data
+	 * @var String
+	 */
+	public $trans_table = 'fd_trans';
+	/**
+	 * Should the draft be automatically sent to FD
+	 * @var Bool
+	 */
+	public $auto_submit_draft = false;
+	
+	/**
+	 * The hour to auto submit draft. If after this time, the DB will checked every 
+	 * keep-alive timeout seconds for pending transactions
+	 * @var int
+	 */
+	public $auto_submit_time = 25;
+	
 	
 //	/**
 //	 * First method called when a new object is created.
@@ -70,10 +83,11 @@ class RealTimeTrans extends Vendor{
 	/**
 	 * processReceivedData() - process the data returned by the remote vendor
 	 * @param byte[] $msg - the data received from the vendor
-	 * @param VencodrClientConnection $conn - the remote connection
 	 * @param RealTimeTrans $app - a link back to this object
+	 * @param Bool $duplicate - dummy variable; not used
+	 * @param Int $trans_id - if this is a duplicate, then this is the second trans DB record id
 	 */
-	public function processReceivedData($msg, $conn, $app){
+	public function processReceivedData($msg, $app, $duplicate = false, $trans_id = -1){
 		$app = $this;
 		// this closure handles the incoming data
 		// VendorClientConnection has done basic sanity checks to ensure 
@@ -95,12 +109,12 @@ class RealTimeTrans extends Vendor{
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Processing an AUTH_RESP or REV_RESP message');
 			
 			// get a MySQl connection to update the record in the DB
-			$sql_conn = $app->sql->getConnection(function($sql) use ($conn, $app, $msg){
+			$sql_conn = $app->sql->getConnection(function($sql) use ($app, $msg){
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 2');
 
-				$query = SQL::buildQueryForOriginalTrans($msg, $app);
+				$query = SQL::buildQueryForOriginalTrans($msg, $app->trans_table);
 				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to execute query:'.$query);
-				$sql->query($query, function($sql, $success) use($conn, $app, $msg, $query){
+				$sql->query($query, function($sql, $success) use($app, $msg, $query){
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __FILE__.':'.__METHOD__.':'.__LINE__.' executing 3');
 					// check for a successful sql query
 					if ($success === false) {
