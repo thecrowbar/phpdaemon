@@ -428,7 +428,7 @@ class SQL {
 
 		if ($msg->dataExistsForBit(39)) {
 			// if we do not have bit38 data then this is a capture response
-			if (strlen($auth_iden_response) === 0) {
+			if (strlen($auth_iden_response) === 0 && $msg->_trans_type !== ISO8583Trans::TRANS_TYPE_REFUND) {
 				$capture = true;
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Setting response trans('.$msg->original_trans_id.') to capture === true');
 			}
