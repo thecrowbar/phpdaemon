@@ -120,6 +120,12 @@ class ISO8583Trans extends ISO8583{
 	 */
 	public $tk2;
 	
+	/**
+	 * The Bit31 acquirer reference data value for this transaction
+	 * @var Int
+	 */
+	public $acquirer_reference_data = -1;
+	
 	public function __set($name, $val) {
 		$this->$name = $val;
 	}
