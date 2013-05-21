@@ -614,34 +614,71 @@ class ISO8583Trans extends ISO8583{
 		if ($this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
 			// calculate the card specific tables VI, MC, DS
 			if (strtoupper($this->card_type) === 'VISA') {
-				if ($this->getMTI() === self::MTI_0100 || // make sure this is an authorization
-						($this->dataExistsForBit(31) && // or host_draft_capture is set
-						($this->getDataForBit(31) == "\x011" || $this->getDataForBit(31) == "\x010"))) { 
-					$tblVI .= $this->convertDEC2BCD('0002');
-					$tblVI .= 'VI';
-				} else {
-					// this should not generate an exception. If the conditions are 
-					// not met then we just do not include this table
-	//				throw new Exception("Not adding table VI MTI:".$this->getMTI(true).', dataExistsForBit(31):'.$this->dataExistsForBit(31).
-	//						', bit31 data:'.bin2hex($this->getDataForBit(31)).' $tblVI:'.$tblVI);
+				if ($this->getMTI() === self::MTI_0100){
+					if ($this->dataExistsForBit(31) && // or host_draft_capture is set
+							($this->getDataForBit(31) == "\x011" || $this->getDataForBit(31) == "\x010")) { 
+						$tblVI .= $this->convertDEC2BCD('0002');
+						$tblVI .= 'VI';
+					} else if($this->dataExistsForBit(31) && $this->getDataForBit(31) == "\x012"){
+						// this is a capture only
+						$vi_fields = array(
+							array('CR', 'card_level_response_code',2,' ')
+						);						
+						$tblVI .= $this->_buildBit63FieldIdentifierTable('VI', $vi_fields);
+					}
 				}
 			} else if (strtoupper($this->card_type) == 'MASTER CARD'){
-				if ($this->getMTI() === self::MTI_0100 || // make sure this is an auth message
-						($this->dataExistsForBit(31) && // or host_draft_capture is set
-						($this->getDataForBit(31) === "\x011" || $this->getDataForBit(31) == "\x010"))) { 
-					$tblMC .= $this->convertDEC2BCD('0002');
-					$tblMC .= 'MC';
+				if ($this->getMTI() === self::MTI_0100){
+					if ($this->dataExistsForBit(31) && // or host_draft_capture is set
+							($this->getDataForBit(31) === "\x011" || $this->getDataForBit(31) == "\x010")) { 
+						// this is an auth only or auth+capture trans
+						$tblMC .= $this->convertDEC2BCD('0002');
+						$tblMC .= 'MC';
+					}else  if($this->dataExistsForBit(31) && $this->getDataForBit(31) == "\x012"){
+						// this is a capture only trans
+						$mc_fields = array(
+							array('01', 'TD_card_data_input_cap', 1, '0'),
+							array('02', 'TD_cardholder_auth_cap', 1, '9'),
+							array('03', 'TD_card_capture_cap', 1, '9'),
+							array('04', 'term_oper_environ', 1, '0'),
+							array('05', 'cardholder_present_data', 1, '9'),
+							array('06', 'card_present_data', 1, '9'),
+							array('07', 'CD_input_mode', 1, '0'),
+							array('08', 'cardholder_auth_method', 1, '9'),
+							array('09', 'cardholder_auth_entity', 1, '9'),
+							array('10', 'card_data_output_cap', 1, '0'),
+							array('11', 'term_data_output_cap', 1, '0'),
+							array('12', 'pin_capture_cap', 1, '1')
+						);
+						$tblMC = $this->_buildBit63FieldIdentifierTable('MC', $mc_fields);
+						//Vendor::logger(Vendor::LOG_LEVEL_NOTICE,'MC Table not yet implemented for capture transactions');
+					}
 				}
 			} else if (strtoupper($this->card_type) === 'DISCOVER' ||
 					strtoupper($this->card_type) === 'JCB' ||
 					strtoupper($this->card_type) === 'DINERS CLUB') {
-				if ($this->getMTI() == self::MTI_0100 || // make sure this is an auth message
-						($this->dataExistsForBit(31) && // or host_draft_capture is set
-						$this->getDataForBit(31) === "\x011")) { 
-					$tblDS .= $this->convertDEC2BCD('0002');
-					$tblDS .= 'DS';
+				if ($this->getMTI() == self::MTI_0100){
+					if ($this->dataExistsForBit(31) && // or host_draft_capture is set
+							($this->getDataForBit(31) === "\x011" || $this->getDataForBit(31) == "\x010")) { 
+						$tblDS .= $this->convertDEC2BCD('0002');
+						$tblDS .= 'DS';
+					} else if ($this->dataExistsForBit(31) && $this->getDataForBit(31) == "\x012"){
+						// this is a capture only
+						$ds_fields = array(
+							array('01','ds_processing_code', 6, ' '),
+							array('02','sys_trace_audit_num',6, ' '),
+							array('03','pos_entry_mode', 3, ' '),
+							array('04','local_tran_time', 6, '0'),
+							array('05','local_tran_date', 4, '0'),
+							array('06','ds_response_code', 2, '0'),
+							array('07','ds_pos_data', 13, ' '),
+							array('08','track_data_condition_code',2,' '),
+							array('09','ds_avs_result', 1, ' '), 
+							array('10','nrid', 15, ' ')
+						);
+						$tblDS = $this->_buildBit63FieldIdentifierTable('DS', $ds_fields);
+					}
 				}
-
 			} else if (strtoupper($this->card_type) === 'AMERICAN EXPRESS'){
 				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Not adding card specific tables for card type:'.$this->card_type);
 			}else {
@@ -820,6 +857,24 @@ class ISO8583Trans extends ISO8583{
 			return $tbl14_str;
 			
 		}
+	}
+	
+	/**
+	 * _buildBit63FieldIdentifierTables() - create the required FIT table
+	 * @param type $tname - the table name
+	 * @param Array $fields - each element is an array that contains a single field
+	 *  consists of array('fld iden', 'db_row field', length, 'pad char')
+	 * @return string
+	 */
+	protected function _buildBit63FieldIdentifierTable($tname, $fields) {
+		$table = $tname;
+		
+		foreach($fields as $f) {
+			$table .= $f[0].str_pad(substr($this->_trans_row[$f[1]],0,$f[2]), $f[2], $f[3], STR_PAD_LEFT)."\x1C";
+		}
+		// now set our length
+		$table = $this->convertDEC2BCD(str_pad(strlen($table),4,'0',STR_PAD_LEFT)).$table;
+		return $table;
 	}
 	
 	
