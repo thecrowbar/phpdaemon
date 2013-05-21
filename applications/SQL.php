@@ -466,7 +466,8 @@ class SQL {
 		// <editor-fold defaultstate="collapsed" desc="Table14 Card Specific Queries">
 		// now create query specific to card type based on table14
 		// 0410 Reversal Response Messages already have these tables created
-		if ($msg->getMTI() !== ISO8583Trans::MTI_0410 ) {
+		// CAPTURE (0100) messages already have these created
+		if ($msg->getMTI() !== ISO8583Trans::MTI_0410  && $capture !== true) {
 			switch($msg->card_type) {
 				case 'Visa' :
 					if ($msg->dataExistsForTable(14)) {
@@ -535,56 +536,59 @@ class SQL {
 		//</editor-fold>
 		
 		//<editor-fold defaultstate="collapsed" desc="Card Compliance/Qualification Tables">
-		switch($msg->card_type) {
-			case 'Visa':
-				if ($msg->dataExistsForTable('VI')) {
-					$tblVI = $msg->getParsedBit63TableVI();
-					$query = "INSERT INTO fd_visa_compliance
-						(trans_id, card_level_response_code, source_reason_code,
-						`unknown`)
-						VALUES
-						({$msg->original_trans_id},'{$tblVI['CR']}', '{$tblVI['RS']}',
-						'{$tblVI['UF']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Master Card':
-				if ($msg->dataExistsForTable('MC')) {
-					$tblMC = $msg->getParsedBit63TableMC();
-					$query = "INSERT INTO fd_mastercard_qualification
-						(trans_id, TD_card_data_input_cap, TD_cardholder_auth_cap,
-						TD_card_capture_cap, term_oper_environ, cardholder_present_data,
-						card_present_data, CD_input_mode, cardholder_auth_method,
-						cardholder_auth_entity, card_data_output_cap, term_data_output_cap,
-						pin_capture_cap)
-						VALUES
-						({$msg->original_trans_id}, '{$tblMC['card_data_input_cap']}', '{$tblMC['cardholder_auth_cap']}',
-						'{$tblMC['card_capture_cap']}', '{$tblMC['term_oper_environ']}', '{$tblMC['cardholder_present']}',
-						'{$tblMC['card_present_data']}', '{$tblMC['card_data_input_mode']}', '{$tblMC['cardholder_auth_method']}',
-						'{$tblMC['cardholder_auth_entity']}', '{$tblMC['card_data_output_cap']}', '{$tblMC['terminal_data_out_cap']}',
-						'{$tblMC['pin_capture_cap']}')";
-					$queries[] = $query;
-				}
-				break;
-			case 'Discover':
-			case 'Diners Club':
-			case 'JCB':
-				if ($msg->dataExistsForTable('DS')) {
-					$tblDS = $msg->getParsedBit63TableDS();
-					$query = "INSERT INTO fd_discover_compliance
-						(trans_id, processing_code, sys_trace_audit_num,
-						pos_entry_mode, local_tran_time, local_tran_date,
-						response_code, pos_data, track_data_condition_code,
-						avs_result, nrid)
-						VALUES
-						($msg->original_trans_id, '{$tblDS['processing_code']}', '{$tblDS['sys_trc_audit_num']}', 
-						'{$tblDS['pos_entry_mode']}', '{$tblDS['local_tran_time']}', '{$tblDS['local_tran_date']}', 
-						'{$tblDS['response_code']}', '{$tblDS['pos_data']}', '{$tblDS['trk_data_cond']}', 
-						'{$tblDS['avs']}', '{$tblDS['nrid']}')";
-					$queries[] = $query;
-				}
-				break;
-					
+		// we do not want to add a new entry for 0100 CAPTURE responses
+		if ($capture !== true) {
+			switch($msg->card_type) {
+				case 'Visa':
+					if ($msg->dataExistsForTable('VI')) {
+						$tblVI = $msg->getParsedBit63TableVI();
+						$query = "INSERT INTO fd_visa_compliance
+							(trans_id, card_level_response_code, source_reason_code,
+							`unknown`)
+							VALUES
+							({$msg->original_trans_id},'{$tblVI['CR']}', '{$tblVI['RS']}',
+							'{$tblVI['UF']}')";
+						$queries[] = $query;
+					}
+					break;
+				case 'Master Card':
+					if ($msg->dataExistsForTable('MC')) {
+						$tblMC = $msg->getParsedBit63TableMC();
+						$query = "INSERT INTO fd_mastercard_qualification
+							(trans_id, TD_card_data_input_cap, TD_cardholder_auth_cap,
+							TD_card_capture_cap, term_oper_environ, cardholder_present_data,
+							card_present_data, CD_input_mode, cardholder_auth_method,
+							cardholder_auth_entity, card_data_output_cap, term_data_output_cap,
+							pin_capture_cap)
+							VALUES
+							({$msg->original_trans_id}, '{$tblMC['card_data_input_cap']}', '{$tblMC['cardholder_auth_cap']}',
+							'{$tblMC['card_capture_cap']}', '{$tblMC['term_oper_environ']}', '{$tblMC['cardholder_present']}',
+							'{$tblMC['card_present_data']}', '{$tblMC['card_data_input_mode']}', '{$tblMC['cardholder_auth_method']}',
+							'{$tblMC['cardholder_auth_entity']}', '{$tblMC['card_data_output_cap']}', '{$tblMC['terminal_data_out_cap']}',
+							'{$tblMC['pin_capture_cap']}')";
+						$queries[] = $query;
+					}
+					break;
+				case 'Discover':
+				case 'Diners Club':
+				case 'JCB':
+					if ($msg->dataExistsForTable('DS')) {
+						$tblDS = $msg->getParsedBit63TableDS();
+						$query = "INSERT INTO fd_discover_compliance
+							(trans_id, processing_code, sys_trace_audit_num,
+							pos_entry_mode, local_tran_time, local_tran_date,
+							response_code, pos_data, track_data_condition_code,
+							avs_result, nrid)
+							VALUES
+							($msg->original_trans_id, '{$tblDS['processing_code']}', '{$tblDS['sys_trc_audit_num']}', 
+							'{$tblDS['pos_entry_mode']}', '{$tblDS['local_tran_time']}', '{$tblDS['local_tran_date']}', 
+							'{$tblDS['response_code']}', '{$tblDS['pos_data']}', '{$tblDS['trk_data_cond']}', 
+							'{$tblDS['avs']}', '{$tblDS['nrid']}')";
+						$queries[] = $query;
+					}
+					break;
+
+			}
 		}
 		//</editor-fold>
 		
