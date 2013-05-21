@@ -34,8 +34,8 @@
 	<div id="content">
 		<h2>Processing Draft for <?php echo $req->draft_date; ?></h2>
 		<?php
-		if (is_array($this->job->getResult('submit_draft'))) {
-			$trans = $this->job->getResult('submit_draft');
+		if (is_array($this->app->job->getResult('submit_draft'))) {
+			$trans = $this->app->job->getResult('submit_draft');
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->app is of type:'.Vendor::get_type($this->app));
 //			echo "<div style='height:250px; overflow:scroll; width:1000px;><pre>\n";
 //			print_r($this->app);
