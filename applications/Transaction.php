@@ -34,6 +34,9 @@ class Transaction {
 	 * @var String
 	 */
 	protected $type_name = '';
+	public $merchant_id = -1;
+	public $terminal_id = -1;
+	public $host_capture = -1;
 	private $process_server = '';
 	private $decrypt_url = '/decrypt_cc_number.php';
 	/**
@@ -55,7 +58,8 @@ class Transaction {
 		array(array('Response Code', 'Text', 'Refunded'), array(
 				array('response_code', 'text',2), array('response_text', 'text',22),array('refunded', null, 2)
 			)
-		)
+		),
+		array(array('TID','MID'),array(array('terminal_id', 'text', 10), array('merchant_id', 'text',18)))
 	);
 	
 	public function __construct($db_row) {
@@ -86,6 +90,9 @@ class Transaction {
 		$this->pos_entry_pin = $db_row['pos_entry_pin'];
 		$this->pos_condition_code = $db_row['pos_condition_code'];
 		$this->processing_code = $db_row['processing_code'];
+		$this->merchant_id = $db_row['merchant_id'];
+		$this->terminal_id = $db_row['terminal_id'];
+		$this->host_capture = $db_row['host_capture'];
 	}
 	
 	public function outputHtmlView(){
