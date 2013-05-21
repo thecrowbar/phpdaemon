@@ -177,8 +177,11 @@ class Transaction {
 		$vs_elems = array(
 			array('Authorization Characteristic Indicator', array('aci','text', 2)),
 			array('Issuer Trans Id', array('issuer_trans_id', 'text', 30)),
-			array('Total Auth Amount', array('total_auth_amount', 'text', 7)),
-			array('First Auth Amount', array('first_auth_amount', 'text', 7)),
+			array(array('Auth Amount: First', 'Total'), array(
+				array('first_auth_amount', 'text', 7),
+				array('total_auth_amount', 'text', 7)
+				)
+			),
 			array('Market Specific Data Indicator', array('mkt_specific_data_ind', 'text', 2)),
 			array('Validation Code', array('validation_code', 'text', 12)),
 			// array('Requested Payment Service', array('text', 'rps', 2)) RPS is no longer used; see ACI
