@@ -28,10 +28,13 @@
 		cursor: pointer;
 	}
 </style>
-<script src="//ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
+<script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
 <link rel="stylesheet" href="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.0/themes/base/jquery-ui.css" type="text/css" media="all" /> 
-<script src="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.0/jquery-ui.min.js"></script>
-<script src="/js/jquery.json-2.3.min.js"></script>
+<script type="text/javascript" src="//ajax.googleapis.com/ajax/libs/jqueryui/1.9.0/jquery-ui.min.js"></script>
+<script type="text/javascript" src="/js/jquery.json-2.3.min.js"></script>
+<script type="text/javascript" src="/js/jquery.tablesorter.min.js"></script>
+<script type="text/javascript" src="/js/websocket.js"></script>
+<script type="text/javascript" src="/js/UT.core.js"></script>
 <script type="text/javascript" src="/js/Vendor.js"></script>
 <title>phpdaemon Example</title>
 </head>
@@ -39,9 +42,9 @@
 	<div id="content">
 		<h2>phpdaemon Example</h2>
 		<?php
-		if (is_array($this->job->getResult('pending_trans'))) {
-			if (count($this->job->getResult('pending_trans')) > 0 ) {
-				$trans = $this->job->getResult('pending_trans');
+		if (is_array($this->app->job->getResult('pending_trans'))) {
+			if (count($this->app->job->getResult('pending_trans')) > 0 ) {
+				$trans = $this->app->job->getResult('pending_trans');
 				// we have pending transactions to display
 				// get the first five column names from the array
 				$columns = array_keys($trans[0]);
