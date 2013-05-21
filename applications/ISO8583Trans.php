@@ -225,9 +225,9 @@ class ISO8583Trans extends ISO8583{
 		} else if ($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK ||
 				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_CVC_CHECK ||
 				$this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_N_CVC ) {
-			if ($this->_trans_row['processing_code'] !== '300000') {
+			if ($this->_trans_row['processing_code'] !== '000000') {
 				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong processing code ('.$this->_trans_row['processing_code'].'). Correcting');
-				$this->_trans_row['processing_code'] = '300000';
+				$this->_trans_row['processing_code'] = '000000';
 			}
 		} else {
 			if ($this->_trans_row['processing_code'] !== '000000') {
@@ -267,6 +267,10 @@ class ISO8583Trans extends ISO8583{
 			$msg = 'Retail transactions require a know PIN capability';
 			Vendor::logger(Vendor::LOG_LEVEL_ERROR, $msg);
 			throw new Exception($msg);
+		} else if ($this->_trans_type === self::TRANS_TYPE_REFUND &&
+				$this->_trans_row['pos_entry_pin'] !== '011') {
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS entry pin ('.$this->_trans_row['pos_entry_pin'].'). Correcting');
+			$this->_trans_row['pos_entry_pin'] = '011';
 		}
 		$this->addData(22, $this->_trans_row['pos_entry_pin']);
 		//</editor-fold>
@@ -307,9 +311,7 @@ class ISO8583Trans extends ISO8583{
 		// the query to pull in the data for a single transaction uses the fd_merchant_info.host_capture
 		// boolean field for the acquirer_reference_data value
 		// and the trans type is not refund
-		if ($this->_trans_type === self::TRANS_TYPE_REFUND ||
-				$this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL ||
-				$this->_trans_type === self::TRANS_TYPE_REVERSAL ){
+		if ($this->_trans_type === self::TRANS_TYPE_REFUND ){
 			if ($this->_trans_row['acquirer_reference_data'] !== '2') {
 				Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong acquirer_reference_data code ('.$this->_trans_row['acquirer_reference_data'].'). Correcting');
 				$this->_trans_row['acquirer_reference_data'] = '2';
@@ -322,6 +324,10 @@ class ISO8583Trans extends ISO8583{
 				$this->_trans_row['acquirer_reference_data'] = '0';
 			}
 			// Zero Dollar AVS & CVV/CVC2 checks require host_capture flag to be auth only
+		} else if ($this->_trans_type === self::TRANS_TYPE_TIMEOUT_REVERSAL ||
+				$this->_trans_type === self::TRANS_TYPE_REVERSAL ){
+			//Vendor::logger(Vendor::LOG_LEVEL_NOTICE, )
+			
 		}
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Transaction ('.$this->_trans_id.') using bit31 data:'.$this->_trans_row['acquirer_reference_data']);
 		$this->addData(31, $this->_trans_row['acquirer_reference_data']);
@@ -361,6 +367,14 @@ class ISO8583Trans extends ISO8583{
 			$this->addData(38, $this->_trans_row['auth_iden_response']);
 			// 2013-04-19 per Manana bit39 is not included in FULL AUTH REVERSAL
 			//$this->addData(39, $this->_trans_row['response_code']);
+		}
+		//</editor-fold>
+		
+		//<editor-fold defaultstate="collapsed" desc="Bit39 Response Code">
+		if($this->getDataForBit(31) === "\x012" &&
+				$this->_trans_type !== self::TRANS_TYPE_REFUND){
+			// bit39 is required for capture only transactions, except refunds
+			$this->addData(39, $this->_trans_row['response_code']);
 		}
 		//</editor-fold>
 		
@@ -443,14 +457,19 @@ class ISO8583Trans extends ISO8583{
 		
 		$this->addData(59, $this->_trans_row['merchant_zip_code']);
 		
+		//<editor-fold defaultstate="collapsed" desc="Bit60 Additional POS Information">
 		// FIXME This needs to be clarified. Swiped transactions need bit60==42
 		// what about manual keyed transaction?
+		// 2013-05-16 AVS and CVC Zero $ trans need bit60
 		// bit 60 is required for any card present transactions
-		if ($this->dataExistsForBit(25) && $this->getDataForBit(25) === "\x00") {
+		if ($this->dataExistsForBit(25) && 
+				($this->getDataForBit(25) === "\x00" || $this->getDataForBit(25) === "\x51" ||
+				$this->getDataForBit(25) === "\x52")) {
 			$this->addData(60, '42');
 		} else {
 			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Not adding data for bit 60! Bit 25:'.bin2hex($this->getDataForBit(25)));
 		}
+		//</editor-fold>
 		
 	}
 	
@@ -475,7 +494,7 @@ class ISO8583Trans extends ISO8583{
 			//$tbl14 .= 'Y';
 			$tbl14 .= $this->_calculateBit63Table14();
 			if (strlen($tbl14) != 50) {
-				die("Table 14 data is wrong length! MTI:".$this->getMTI()." Table 14 length:".strlen($tbl14).", Table 14 data: {$tbl14}");
+				die("Table 14 data is wrong length! MTI:".$this->getMTI(true)." Table 14 length:".strlen($tbl14).", Table 14 data: {$tbl14}");
 			}
 		} else {
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 14 not added. Trans_type:'.$this->_trans_type.' Card Type:'.$this->card_type);
@@ -498,7 +517,8 @@ class ISO8583Trans extends ISO8583{
 		// calculate our table 36 data
 		// Table 36 is Additional Addendum Data
 		// only used for direct marketing and retail with host capture and MTI 0100
-		if ($this->getDataForBit(31) === "\x011" && $this->_mti === self::MTI_0100
+		if ( ($this->getDataForBit(31) === "\x011" || $this->getDataForBit(31) === "\x012")
+				&& $this->_mti === self::MTI_0100
 				&& ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING 
 					|| $this->_trans_type === self::TRANS_TYPE_RETAIL
 					|| $this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING)) {
@@ -536,8 +556,13 @@ class ISO8583Trans extends ISO8583{
 		// recurring billing is from information stored in a DB, we never use
 		// table 49 with recurring billing. Only manually entered transactions
 		// will have table49 data
+		// authorization and auth+capture only
 		// calculate our table 49 data
-		if (array_key_exists('table49', $this->_trans_row) && strlen($this->_trans_row['table49']) > 0) {
+		if ($this->dataExistsForBit(35)){
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Not adding table 49 data! Track2 exists! This is a swiped transaction');
+		}else if (array_key_exists('table49', $this->_trans_row) 
+				&& strlen($this->_trans_row['table49']) > 0
+				&& ($this->getDataForBit(31) === "\x010" || $this->getDataForBit(31) === "\x011")) {
 			//echo "Adding Table 49 data!\n";
 			$tbl49 .= $this->convertDEC2BCD('0007');
 			$tbl49 .= 49;
@@ -553,8 +578,10 @@ class ISO8583Trans extends ISO8583{
 
 		// calculate our table 55 data
 		// table 55 is only present for Visa/MC AND recurring billing
-		if ((strtoupper($this->card_type) === 'VISA' || strtoupper($this->card_type) === 'MASTER CARD') 
-				&& $this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING) {
+		if ((strtoupper($this->card_type) === 'VISA' 
+				|| strtoupper($this->card_type) === 'MASTER CARD') 
+				&& $this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING
+				&& ($this->getDataForBit(31) === "\x010" || $this->getDataForBit(31) === "\x011")) {
 			//echo "Adding Table 55 data!\n";
 			$tbl55 .= $this->convertDEC2BCD('0005');
 			$tbl55 .= 55;
@@ -563,7 +590,9 @@ class ISO8583Trans extends ISO8583{
 				die("Table 55 data is wrong length");
 			}
 		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 55 not added. Trans_type:'.$this->_trans_type.' Card Type:'.$this->card_type);
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 55 not added. Trans_type:'.
+					$this->_trans_type.' Card Type:'.$this->card_type.
+					' bit32:'.$this->getDataForBit(31, true));
 		}
 
 		// calculate our table 60 data
@@ -580,14 +609,14 @@ class ISO8583Trans extends ISO8583{
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Table 60 not added. Trans_type:'.$this->_trans_type);
 		}
 		
-		// Card specific tables are not used for any reversal transactions (MTI = 0400)
-		if ($this->_trans_type !== self::TRANS_TYPE_REVERSAL 
-				&& $this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
+		// Card specific tables are not used for timeout reversal transactions (MTI = 0400)
+		// they are present in all other 0100 and 0400 messages
+		if ($this->_trans_type !== self::TRANS_TYPE_TIMEOUT_REVERSAL) {
 			// calculate the card specific tables VI, MC, DS
 			if (strtoupper($this->card_type) === 'VISA') {
 				if ($this->getMTI() === self::MTI_0100 || // make sure this is an authorization
 						($this->dataExistsForBit(31) && // or host_draft_capture is set
-						$this->getDataForBit(31) == "\x011")) { 
+						($this->getDataForBit(31) == "\x011" || $this->getDataForBit(31) == "\x010"))) { 
 					$tblVI .= $this->convertDEC2BCD('0002');
 					$tblVI .= 'VI';
 				} else {
@@ -599,7 +628,7 @@ class ISO8583Trans extends ISO8583{
 			} else if (strtoupper($this->card_type) == 'MASTER CARD'){
 				if ($this->getMTI() === self::MTI_0100 || // make sure this is an auth message
 						($this->dataExistsForBit(31) && // or host_draft_capture is set
-						$this->getDataForBit(31) === "\x011")) { 
+						($this->getDataForBit(31) === "\x011" || $this->getDataForBit(31) == "\x010"))) { 
 					$tblMC .= $this->convertDEC2BCD('0002');
 					$tblMC .= 'MC';
 				}
