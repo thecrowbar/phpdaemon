@@ -548,6 +548,10 @@ class Vendor extends AppInstance{
 						Vendor::logger(Vendor::LOG_LEVEL_ERROR, "User: {$tr['user_name']}, has unknown card type: {$tr['cc_type']}");
 				}
 			}
+			// make sure we have a trans type
+			if ($iso->_trans_type === '') {
+				$iso->_trans_type = $tr['trans_type'];
+			}
 
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Finished adding data from original trans!');
 		}catch(Exception $e){
@@ -1049,8 +1053,8 @@ class Vendor extends AppInstance{
 		$receipt_number = $iso->getDataForBit(11, true);
 		$retrieval_reference_number = ltrim($iso->getDataForBit(37, true), '0');
 		$MTI = $iso->getMTI(true);
-		$acquirer_reference_data = (string)$iso->getDataForBit(31, true);
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$acquirer_reference_data:"'.$acquirer_reference_data.'" is of type:'.Vendor::get_type($acquirer_reference_data));
+		$acquirer_reference_data = substr($iso->getDataForBit(31, true),-1);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$acquirer_reference_data (HEX):"'.bin2hex($acquirer_reference_data).'" is of type:'.Vendor::get_type($acquirer_reference_data));
 		// we only check MTI === 0100; others are followup messages
 		if ($MTI !== '0100') {
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Trans ('.$receipt_number.') does not have MTI of 0100. Sending without check. MTI:'.$MTI);
@@ -1076,7 +1080,10 @@ class Vendor extends AppInstance{
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Removing 1 transaction from capture list for TID:'.$TID);
 			array_shift($this->recent_trans[$TID]['capture']);
 		}
-		if ($acquirer_reference_data === '0' || $acquirer_reference_data === '1') {
+		if ( $acquirer_reference_data === 0 
+				|| $acquirer_reference_data === 1
+				|| $acquirer_reference_data === '0'
+				|| $acquirer_reference_data === '1') {
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans[$TID][auth] is of type:'.Vendor::get_type($this->recent_trans[$TID]['auth']));
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans[$TID][auth]:'.print_r($this->recent_trans[$TID]['auth'], true));
 			if (in_array($receipt_number, $this->recent_trans[$TID]['auth'])){
@@ -1087,7 +1094,7 @@ class Vendor extends AppInstance{
 				$this->recent_trans[$TID]['auth'][] = $receipt_number;
 				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding trans ('.$receipt_number.') to recent authorizations array');
 			}
-		} else if ($acquirer_reference_data === '2'){
+		} else if ($acquirer_reference_data === 2 || $acquirer_reference_data === '2'){
 			if (in_array($receipt_number, $this->recent_trans[$TID]['capture'])){
 				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Transaction ('.$receipt_number.') has already been captured!');
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
@@ -1097,7 +1104,7 @@ class Vendor extends AppInstance{
 				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding trans ('.$receipt_number.') to recent capture array');
 			}
 		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'checkFupeTrans() $acquirer_reference_data not 0,1,2!');
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'checkDupeTrans() $acquirer_reference_data not (string) 0,1,2!');
 			switch($acquirer_reference_data){
 				case 0:
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$acquirer_reference_data is 0 (integer)');
