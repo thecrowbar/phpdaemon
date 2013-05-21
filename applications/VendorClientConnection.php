@@ -26,8 +26,10 @@ class VendorClientConnection extends NetworkClientConnection {
 	 */
 	public $holdResponses = false;
 	/**
-	 * The number of packets to hold before flooding them in at once. This is
-	 * for testing only and is ignored if $holdResponses is false.
+	 * The number of packets to hold before receiving the last one. This is
+	 * for testing only and is ignored if $holdResponses is false. FD wants to see
+	 * at least 3 time-Out-Reversal packets before they release the que and 
+	 * send a single response.
 	 * @var Int
 	 */
 	public $holdFloodCount = 4;
@@ -36,16 +38,38 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * @var Array[]
 	 */
 	public $heldPackets = array();
+	
+	/**
+	 * **WARNING** If enabled, this will resend some transactions with ~33% resent
+	 * @var Bool
+	 */
+	public $simulate_duplicate_trans = false;
+	
+	/**
+	 * Array that holds recently sent packets for duplicate testing
+	 * @var String[]
+	 */
+	public $sentPackets = array();
+	
+	/**
+	 * Timer that fires after 2 seconds to resend packets. It works to simulate 
+	 * duplicate transaction issues
+	 * @var Timer
+	 */
+	public $resendTimer;
+	
 	/**
 	 * Flag to indicate that no data should actually be sent. Useful for testing
 	 * @var bool
 	 */
 	public $do_not_send = false;
+	
 	/**
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
 	 */
-	public $keepaliveTimeout = 90;
+	public $keepaliveTimeout = 900;
+	
 	/**
 	 * Log file to record all incoming data to
 	 * @var String
@@ -96,6 +120,9 @@ class VendorClientConnection extends NetworkClientConnection {
 	
 	public function init(){
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called with no arguments');
+		// set our log file names to include the class name
+		//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called from:'.get_class());
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' called from:'.get_class().' has parent:'.  get_parent_class());
 	}
 	
 	/**
@@ -287,6 +314,27 @@ class VendorClientConnection extends NetworkClientConnection {
 				// reset our keepaliveTimer
 					Timer::setTimeout($this->keepaliveTimer);
 			} else {
+				// check if we should simulate duplicate transactions
+				// ignore transactions packets smaller than 51 bytes, that is the size of the keep-alive message
+				if ($this->simulate_duplicate_trans === true && strlen($data) > 51) {
+					if (count($this->heldPackets) > 9) {
+						array_shift($this->heldPackets);
+					}
+					$this->heldPackets[] = $data;
+					$rand = rand(0,9);
+					if ($rand < 6) {
+						// resend a packet
+						if (array_key_exists($rand, $this->heldPackets)){
+							Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Attempting to resend a packet to simulate problems');
+							$pkt = $this->heldPackets[$rand];
+							$vendorClientCon = $this;
+							$this->resendTimer = setTimeout(function($timer) use($pkt, $vendorClientCon){
+								Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Resend packet timer firing');
+								$vendorClientCon->sendData($pkt);
+							}, 2 * 1e6);
+						}
+					}
+				}
 				$send_result = $this->write($data);
 				if ($send_result) {
 					// our transaction was sent
