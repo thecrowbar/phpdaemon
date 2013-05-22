@@ -19,8 +19,8 @@ set -e
 # /etc/init.d/phpd: start and stop the php daemon
 
 DAEMON=/opt/phpdaemon/bin/phpd
-PHPD_CONF_FILE=/etc/phpdaemon/phpd.conf
-PHPD_PID_FILE=/var/run/phpd.pid
+PHPD_CONF_FILE=/opt/phpdaemon/conf/phpd.conf
+PHPD_PID_FILE=/opt/phpdaemon/run/phpd.pid
 
 test -x $DAEMON || exit 0
 test -f $PHP_CONF_FILE || exit 0
