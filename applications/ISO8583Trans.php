@@ -909,6 +909,9 @@ class ISO8583Trans extends ISO8583{
 	private function _calculateBit63Table60(){
 		// calculate our table 60 data
 		// Table 60 is used for MOTO/Bill Payment/Electronic Commerce
+                // all RECURRING_BILLING transactions (which emulate subsequent recurring)
+                // and INITIAL_RECURRING (of type Amex, MC) and all
+                // SUBSEQUENT_RECURRING require this table. No others
 		$tbl60 = '';
 		if ($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING ||
 				($this->_trans_type === self::TRANS_TYPE_INITIAL_RECURRING 
