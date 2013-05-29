@@ -267,7 +267,11 @@ class RealTimeTransRequest extends HTTPRequest{
 			case 'reversal':
 				//echo '<pre>'.print_r($req->job->getResults('trans_msg'), true).'</pre>';
 				//echo '<pre>'.print_r($req->job->results, true).'</pre>';
-				$this->createJSONISO8583Response($req->job->getResult('trans_msg'));
+				if (is_object($req->job) && method_exists($req->job, 'getResult')){
+					$this->createJSONISO8583Response($req->job->getResult('trans_msg'));
+				} else {
+					$this->createJSONISO8583Response('');
+				}
 				break;
 			default:
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to require():'.$this->html_file);
