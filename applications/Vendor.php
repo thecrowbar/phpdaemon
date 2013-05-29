@@ -10,6 +10,7 @@ class Vendor extends AppInstance{
 	 * WARNING WARNING WARNING - You must create your own key pair! Do not use this one!
 	 */
 	const PRIVATE_KEY = 'file:///opt/phpdaemon/test-rsa-2048-privkey.pem';
+	//const PRIVATE_KEY = 'file:///opt/phpdaemon/rsa-1024-priv.key';
 	
 	/**
 	 * Messages usefule for debugging
@@ -52,6 +53,7 @@ class Vendor extends AppInstance{
 	
 	public static $log_tcp_stream = true;
 	
+	//<editor-fold defaultstate="collapsed" desc="Class properties to hold config settings">
 	/**
 	 * database object
 	 * @var MySQLClient Object
@@ -94,6 +96,7 @@ class Vendor extends AppInstance{
 	 * @var int
 	 */
 	public $vendorport;
+	//</editor-fold>
 	
 	/**
 	 * The queue to hold transaction before they are sent out
@@ -140,11 +143,18 @@ class Vendor extends AppInstance{
 	 */
 	public static $test_set_only = false;
 	
+	//<editor-fold defaultstate="collapsed" desc="Class properties related to DB">
 	/**
 	 * Flag to indicate if queries should be logged instead of executed
 	 * @var bool
 	 */
 	public static $log_queries = true;
+	
+	/**
+	 * Table name to pull/store transaction information
+	 * @var String
+	 */
+	public $trans_table = 'fd_draft_data';
 	
 	/**
 	 * File name to save queries to if $log_queries is set
@@ -157,6 +167,7 @@ class Vendor extends AppInstance{
 	 * @var Resource
 	 */
 	public $qfile;
+	//</editor-fold>
 	
 	/**
 	 * Requests that are waiting on responses from FD
@@ -171,23 +182,18 @@ class Vendor extends AppInstance{
 	public $job;
 	
 	/**
-	 * Table name to pull/store transaction information
-	 * @var String
-	 */
-	public $trans_table = 'fd_draft_data';
-	
-	/**
 	 * Stores the last 1000 transactions sent out. This is an assoc array of
 	 * TID=>array(Transaction IDs (receipt numbers))
 	 * @var type 
 	 */
 	public $recent_trans = array();
 	
+	//<editor-fold defaultstate="collapsed" desc="Class Properties to control auto processing">
 	/**
 	 * Should the draft be automatically sent to FD
 	 * @var Bool
 	 */
-	public $auto_submit_draft = false;
+	public $auto_submit_draft = true;
 	
 	/**
 	 * The hour to auto submit draft. If after this time, the DB will checked every 
@@ -200,13 +206,21 @@ class Vendor extends AppInstance{
 	 * Should we automatically submit the settlement (capture) transactions
 	 * @var Bool
 	 */
-	public $auto_settle_transactions = false;
+	public $auto_settle_transactions = true;
 	
 	/**
 	 * Time (hour) that we should send auto settlement transactions
 	 * @var Int
 	 */
-	public $auto_settle_time = 11;
+	public $auto_settle_time = 16;
+	
+	/**
+	 * Flag that controls whether the processDraft() method actually does anything.
+	 * This is set to false when a duplicate transaction is detected.
+	 * @var Bool
+	 */
+	public $allow_draft_processing = true;
+	//</editor-fold>
 	
 	/**
 	 * Sets the name of the class to determine if we are child 
@@ -214,24 +228,14 @@ class Vendor extends AppInstance{
 	 */
 	public $class_name = '';
 	
-	/**
-	 * Flag that controls whether the processDraft() method actually does anything.
-	 * This is set to false when a duplicate transaction is detected.
- * @var Bool
-	 */
-	public $allow_draft_processing = true;
+	//<editor-fold defaultstate="collapsed" desc="Class properties that control load logging">
+	public $log_draft_stats = false;
+	public $log_draft_stat_interval = 60;
+	public $log_draft_stats_file = "/opt/phpdaemon/log/draft_log_stats.csv";
+	public $lfile = '';
+	public $log_draft_stats_timer = '';
+	//</editor-fold>
 	
-	/**
-	 * Setting default config options
-	 * Overriden from AppInstance::getConfigDefaults
-	 * Uncomment and return array with your default options
-	 * @return array|false
-	 */
-//	protected function getConfigDefaults() {
-//		return array(
-//			'url' => 'tcp://127.0.0.1:12345'
-//		);
-//	}
 	
 	/**
 	 * First method called when a new object is created.
@@ -282,6 +286,11 @@ class Vendor extends AppInstance{
 			}
 		}
 		
+		// if set to log stats open our log file
+		if ($this->log_draft_stats) {
+			$this->lfile = fopen($this->log_draft_stats_file, 'w+');
+		}
+		
 		$this->class_name = get_class($this);
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
 	}
@@ -316,6 +325,17 @@ class Vendor extends AppInstance{
 //			$app->checkOutboundQueue($app);
 //		}, 1e6 * 900);
 //		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' end');
+		
+		//if set to log draft stats start a timer for it
+		if ($this->log_draft_stats){
+			$app = $this;
+			$this->log_draft_stats_timer = new Timer(function($timer) use($app){
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Stat log timer firing');
+				$app->saveStats();
+				// restart our timer
+				$timer->timeout($app->log_draft_stat_interval * 1e6);
+			}, $this->log_draft_stat_interval*1e6);
+		}
 	}
 	
 	/**
@@ -856,7 +876,7 @@ class Vendor extends AppInstance{
 		// if our $req is null, then we just log an error; if $req is an int
 		// then we search for the $req object in $app->pending_requests
 		if ($req === null){
-			Vendor::logger(Vendor::LOG_LEVEL_WARNING, __METHOD__.' $req object is null!');
+			Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.' $req object is null!');
 			// 2013-05-02 we no longer create the job on our $req object. so this
 			// is not a fatal error
 			//return;
@@ -1069,7 +1089,7 @@ class Vendor extends AppInstance{
 //			$this->recent_trans[$TID]['auth']=array();
 //			$this->recent_trans[$TID]['capture']=array();
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Adding TID ('.$TID.') to recent_trans array');
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans:'.print_r($this->recent_trans, true));
+//			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans:'.print_r($this->recent_trans, true));
 		}
 		// we only store the last 50000 transactions for each TID
 		if (count($this->recent_trans[$TID]['auth']) >= 50000) {
@@ -1085,10 +1105,10 @@ class Vendor extends AppInstance{
 				|| $acquirer_reference_data === '0'
 				|| $acquirer_reference_data === '1') {
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans[$TID][auth] is of type:'.Vendor::get_type($this->recent_trans[$TID]['auth']));
-			Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans[$TID][auth]:'.print_r($this->recent_trans[$TID]['auth'], true));
+			//Vendor::logger(Vendor::LOG_LEVEL_INFO, '$this->recent_trans[$TID][auth]:'.print_r($this->recent_trans[$TID]['auth'], true));
 			if (in_array($receipt_number, $this->recent_trans[$TID]['auth'])){
 				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Transaction ('.$receipt_number.') has already been authorized!');
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
 				return true;
 			} else {
 				$this->recent_trans[$TID]['auth'][] = $receipt_number;
@@ -1097,7 +1117,7 @@ class Vendor extends AppInstance{
 		} else if ($acquirer_reference_data === 2 || $acquirer_reference_data === '2'){
 			if (in_array($receipt_number, $this->recent_trans[$TID]['capture'])){
 				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Transaction ('.$receipt_number.') has already been captured!');
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
+				//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
 				return true;
 			} else {
 				$this->recent_trans[$TID]['capture'][] = $receipt_number;
@@ -1128,7 +1148,7 @@ class Vendor extends AppInstance{
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$acquirer_reference_data is unknown!');
 			}
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.'$acquirer_reference_data:"'.$acquirer_reference_data.'" is of type:'.Vendor::get_type($acquirer_reference_data));
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$this->recent_trans:'.print_r($this->recent_trans, true));
 		}
 			
 		Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Trans id:'.$retrieval_reference_number.', receipt_num:'.$receipt_number.' should be sent!');
@@ -1168,11 +1188,11 @@ class Vendor extends AppInstance{
 						$app->processDraft();
 					});
 				} else {
-					Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'No more transactions to process for '.$today.' in '.__METHOD__.':'.__LINE__);
+					Vendor::logger(Vendor::LOG_LEVEL_NOTICE, get_class().': no more transactions to process for '.$today.' in '.__METHOD__.':'.__LINE__);
 				}
 			});			
 		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Not continuing draft processing due to $app->allow_draft_processing !== true');
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, get_class().': not continuing draft processing due to $app->allow_draft_processing !== true');
 			return;
 		}
 
@@ -1200,14 +1220,14 @@ class Vendor extends AppInstance{
 						$app->settleTransactions($stcb);
 					});
 				} else {
-					Vendor::logger(Vendor::LOG_LEVEL_INFO, 'No trasnactions found to settle!');
+					Vendor::logger(Vendor::LOG_LEVEL_INFO, get_class().': no trasnactions found to settle!');
 					if (is_callable($stcb)) {
 						call_user_func($stcb);
 					}
 				}
 			});
 		} else {
-			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Not settling transactions due to $app->allow_draft_processing !== true');
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, get_class().': not settling transactions due to $app->allow_draft_processing !== true');
 		}
 		
 	}
@@ -1304,6 +1324,18 @@ class Vendor extends AppInstance{
 		$job();
 	}
 	
+	public function saveStats(){
+		$auth_count = 0;
+		$capture_count = 0;
+		foreach($this->recent_trans as $TID=>$trans){
+			$auth_count += count($trans['auth']);
+			$capture_count += count($trans['capture']);
+		}
+		$stat_log = date('H:i:s').",".$auth_count."\n";
+		Vendor::logger(Vendor::LOG_LEVEL_INFO, "saving to stat log: {$stat_log}");
+		fwrite($this->lfile, $stat_log);
+	}
+	
 	// <editor-fold defaultstate="collapsed" desc="Static Methods">
 	/**
 	 * decrypt_data() - decrypt an encrypted string that is also base64 encoded 
@@ -1392,17 +1424,17 @@ class Vendor extends AppInstance{
 			// check if should auto submit the draft for today
 			if ($app->auto_submit_draft && date('G') > $app->auto_submit_time) {
 				// we need to check for transactions
-				Vendor::logger(Vendor::LOG_LEVEL_INFO,'Auto checking for draft transactions');
+				Vendor::logger(Vendor::LOG_LEVEL_INFO,get_class($app).': auto checking for draft transactions');
 				$app->processDraft();
 			} else {
-				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Not attempting to process draft. $this->auto_submit_draft:'.$app->auto_submit_draft.', $this->auto_submit_time:'.$app->auto_submit_time);
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, get_class($app).': not attempting to process draft. $this->auto_submit_draft:'.$app->auto_submit_draft.', $this->auto_submit_time:'.$app->auto_submit_time);
 			}
 			
 			// this handles the auto submit for settlement transactions
 			if ($app->auto_settle_transactions && date('G') >= $app->auto_settle_time) {
 				$app->settleTransactions();
 			} else {
-				Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Not attempting to settle transactions. $this->auto_settle_transactions:'.$app->auto_settle_transactions.', $this->auto_settle_time:'.$app->auto_settle_time);
+				Vendor::logger(Vendor::LOG_LEVEL_INFO, get_class($app).': not attempting to settle transactions. $this->auto_settle_transactions:'.$app->auto_settle_transactions.', $this->auto_settle_time:'.$app->auto_settle_time);
 			}
 		});
 	}
