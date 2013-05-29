@@ -210,7 +210,7 @@ class SQL {
 			trans_dt, cc_exp, pos_entry_pin, 
 			auth_iden_response, response_code, avs_response,
 			avs_data, response_text, table49_response,
-			acquirer_reference_data)
+			acquirer_reference_data, pos_condition_code)
 			VALUES({$type},(SELECT id FROM terminal_info WHERE terminal_id = '{$t['terminal_id']}'), '{$t['customer_site_id']}',
 			'{$t['user_name']}', '{$t['sale_site_id']}', '{$t['sx_order_number']}',
 			'0400', '{$t['pri_acct_no']}', '{$t['cc_last_four']}',
@@ -219,7 +219,7 @@ class SQL {
 			'{$t['trans_dt']}', '{$t['cc_exp']}', '{$t['pos_entry_pin']}',  
 			'{$t['auth_iden_response']}', '{$t['response_code']}', '{$t['avs_response']}',
 			'{$t['avs_data']}', '{$t['response_text']}', '{$t['table49_response']}',
-			'{$t['acquirer_reference_data']}')
+			'{$t['acquirer_reference_data']}', '{$t['pos_condition_code']}')
 			";
 		return $q;
 	}
@@ -387,10 +387,12 @@ class SQL {
 		mi.merch_cat_code AS merchant_category_code, mi.network_international_id,
 		mi.mid AS merchant_id, mi.zip_code AS merchant_zip_code,
 		mi.host_capture, -- acquirer_reference_data is now passed straight through and this is the terminal setting
-		ti.terminal_id -- this overwrites the value from the fdt table
+		ti.terminal_id, -- this overwrites the value from the fdt table
+		tl.type_name AS terminal_type_name -- one of REATAIL | DIRECT_MARKETING
 		
 			FROM {$trans_table} fdt
 			LEFT JOIN terminal_info ti ON ti.id = fdt.terminal_id
+			LEFT JOIN terminal_type_list tl ON tl.id = ti.terminal_type_id
 			LEFT JOIN merchant_info mi ON mi.id = ti.merchant_id
 			LEFT JOIN trans_type_list ttl ON ttl.type_id = fdt.trans_type
 			LEFT JOIN table14_visa t14v ON t14v.trans_id = fdt.id
@@ -427,12 +429,16 @@ class SQL {
 		}
 
 		if ($msg->dataExistsForBit(39)) {
-			// if we do not have bit38 data then this is a capture response
-			if (strlen($auth_iden_response) === 0 && $msg->_trans_type !== ISO8583Trans::TRANS_TYPE_REFUND) {
+			$response_code = $msg->getDataForBit(39);
+			// if we do not have bit38 data, and response_code is '00' and
+			// transaction type is not a refund then this is a capture response
+			if (strlen($auth_iden_response) === 0 
+					&& $response_code === '00'
+					&& $msg->_trans_type !== ISO8583Trans::TRANS_TYPE_REFUND) {
 				$capture = true;
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Setting response trans('.$msg->original_trans_id.') to capture === true');
 			}
-			$response_code = $msg->getDataForBit(39);
+			
 		}
 
 		if ($msg->dataExistsForBit(44)){
