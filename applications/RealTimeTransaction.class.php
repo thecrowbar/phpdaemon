@@ -77,6 +77,7 @@ class RealTimeTransaction extends Transaction {
 		$this->db_row = $db_row;
 		$this->id = $db_row['id'];
 		$this->transID = $this->id;
+                $this->receipt_number = $db_row['receipt_number'];
 		$this->acquirer_reference_data = $db_row['acquirer_reference_data'];
 		$this->trans_date = date('Y-m-d', strtotime($db_row['auth_submit_dt']));
 		switch($this->acquirer_reference_data) {
