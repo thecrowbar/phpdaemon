@@ -53,7 +53,11 @@ class RealTimeTransaction extends Transaction {
 	 * @var Array - array of the lines to output for the HTML detail view
 	 */
 	protected $elems = array(
-		array(null, array('transID', 'hidden', 10)),
+		array(array('TransID', 'Receipt Number'), array(
+			array('transID', 'text', 10), 
+			array('receipt_number', 'text',10)
+			)
+		),
 		array(array('Auth Date','Capture Date'), array(array('auth_submit_dt', 'text', 18),array('capture_submit_dt', 'text', 18))),
 		array(array('CC Number', 'Exp(YYMM)'), array(array('cc_number', 'text',20), array('cc_exp', 'text',4))),
 		array(array('AVS Data', 'Response'), array(array('avs_data','text', 30), array('avs_response','text', 2))),
