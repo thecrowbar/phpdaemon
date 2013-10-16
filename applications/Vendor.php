@@ -193,7 +193,7 @@ class Vendor extends AppInstance{
 	 * Should the draft be automatically sent to FD
 	 * @var Bool
 	 */
-	public $auto_submit_draft = true;
+	public $auto_submit_draft = false;
 	
 	/**
 	 * The hour to auto submit draft. If after this time, the DB will checked every 
@@ -206,7 +206,7 @@ class Vendor extends AppInstance{
 	 * Should we automatically submit the settlement (capture) transactions
 	 * @var Bool
 	 */
-	public $auto_settle_transactions = true;
+	public $auto_settle_transactions = false;
 	
 	/**
 	 * Time (hour) that we should send auto settlement transactions
@@ -593,14 +593,15 @@ class Vendor extends AppInstance{
 	 */
 	public function createISOandSend($app, $req, $id, $track2 = null, $cvc = null, $settle = false,
 			$cb=null) {
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'We need to create an ISO8553 Object and send it! $id:'.$id);
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': We need to create an ISO8553 Object and send it! $id:'.$id);
 		// if we have a $req object store it
 		if (is_object($req)) {
+			//Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': returning an existing ')
 			$app->pending_requests[$id] = $req;
 		}
 		$q = SQL::singleTransDetailQuery($id, $this->trans_table);
 		$app->executeQuery($app, $q, function($result) use($app, $req, $track2, $cvc, $cb, $id, $settle){
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'createISOandSend(), $id:.'.$id.' $result:'.print_r($result, true));
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'createISOandSend(), $id:'.$id.' $result:'.print_r($result, true));
 			// first check if this transaction was already submitted
 			if (is_array($result)) {
 				$tr = $result[0];
@@ -622,10 +623,36 @@ class Vendor extends AppInstance{
 				// add in our submit_dt, track2, and cvc data
 				$tr['track2'] = $track2;
 				$tr['table49'] = $cvc;
-				$tr['submit_dt'] = date('Y-m-d H:i:s');
-				// the TIMEOUT_REVERSAL messages can have a submit_dt value. 
+				//$tr['submit_dt'] = date('Y-m-d H:i:s');
+				if ($tr['trans_type'] == ISO8583Trans::TRANS_TYPE_REVERSAL) {
+					// reversal trans use the trans_dt value because it matches the 
+					// original auth submit_dt
+					$tr['submit_dt'] = $tr['trans_dt'];
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Using the trans_dt value for the submit_dt value because this is a REVERSAL');
+				} else {
+					$tr['submit_dt'] = date('Y-m-d H:i:s');
+				}
+//				if ($tr['acquirer_reference_data'] === '2') {
+//					// this is a capture only transaction; the date time should match the 
+//					// auth only transactions *** wrong per Ed Perez email dated 5/30/13 3:04PM
+//					//$tr['submit_dt'] = $tr['auth_submit_dt'];
+//				} else {
+//					// this is the first transaction. Set datetime to current
+//					if ($tr['trans_type'] == ISO8583Trans::TRANS_TYPE_REVERSAL) {
+//						// reversal trans use the trans_dt value because it matches the 
+//						// original auth submit_dt
+//						$tr['submit_dt'] = $tr['trans_dt'];
+//						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Using the trans_dt value for the submit_dt value because this is a REVERSAL');
+//					} else {
+//						$tr['submit_dt'] = date('Y-m-d H:i:s');
+//					}
+//				}
+				
+				// the TIMEOUT_REVERSAL messages can have a duplicate submit_dt value. 
 				// These are sent continuously until a response is received
-				if ($tr['trans_type'] !== ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL) {
+				// REVERSAL transactions should match the original auth transaction
+				if ($tr['trans_type'] !== ISO8583Trans::TRANS_TYPE_TIMEOUT_REVERSAL
+						|| $tr['trans_type'] !== ISO8583Trans::TRANS_TYPE_REVERSAL) {
 					// we can have three types of transactions. Depending on their
 					// acquirer_reference_data value
 					switch($tr['acquirer_reference_data']) {
@@ -658,6 +685,9 @@ class Vendor extends AppInstance{
 										') was authorized:'.$tr['auth_submit_dt'].
 										' & captured:'.$tr['capture_submit_dt']);
 								return;
+							} else {
+								// set our capture_dt to now
+								$tr['capture_submit_dt'] = date('Y-m-d H:i:s');
 							}
 							break;
 						default:
@@ -666,6 +696,8 @@ class Vendor extends AppInstance{
 					}
 				} else {
 					// TODO check the 0400 message auth_submit_dt and capture_submit_dt
+					// a 0400
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'REVERSAL trans datetime should match original auth only, but we do not have it! Data:'.print_r($tr, true));
 				}
 				
 				// if we get here then the submit_dt checks passed
@@ -701,7 +733,7 @@ class Vendor extends AppInstance{
 							$app->checkOutboundQueue($app);
 						});
 						Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'After the $app->connect() call in createISOandSend(). About to check for callback');
-						// execute our callback (if any)
+						 // execute our callback (if any)
 						if (isset($cb) && is_callable($cb)) {
 							Vendor::logger(Vendor::LOG_LEVEL_DEBUG,' About to call user function at '.__FILE__.':'.__LINE__);
 							call_user_func($cb);
@@ -983,20 +1015,26 @@ class Vendor extends AppInstance{
 
 			if (!$success) {
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection failed in '.__METHOD__);
+			} else {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'getConnection succeeded in '.__METHOD__);
 			}
 			if (self::$log_queries && $app->qfile !== false) {
 				fwrite($app->qfile, "$query\n\n");
 			}
 
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'About to call $sql->query() on $sql:'.get_class($sql));
 			// execute a query on our sql object
 			$sql->query($query, function($sql, $success) use ($query, $cb) {
 				if (!$success) {
 					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error executing query:'.$query);
 					return;
+				}else {
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': successfully ran query:'.$query);
 				}
 				$result = self::determineSQLResult($query, $sql);
 				// execute our callback or return the results of this query
 				if (is_callable($cb)) {
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': calling user provided $cb');
 					call_user_func($cb, $result);
 				} else {
 					return $sql;
@@ -1007,6 +1045,7 @@ class Vendor extends AppInstance{
 		Vendor::logger(Vendor::LOG_LEVEL_INFO, __METHOD__.': $sql_conn:'.$sql_conn);
 		if ($sql_conn === false) {
 			// return false if the SQL connection fails
+			Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'sql_conn failed. Query:'.$query);
 			return $sql_conn;
 		}
 	}
@@ -1037,8 +1076,9 @@ class Vendor extends AppInstance{
 	/**
 	 * checkOutboundQueue() - check outbound queue for message and send
 	 * @param Vendor $app
+	 * @param Closure $cb - a function to execute once the queue is checked
 	 */
-	public function checkOutboundQueue($app){
+	public function checkOutboundQueue($app, $cb = null){
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' running!');
 		// if there any items in the queue then send one off 
 		if (count($app->tq) > 0) {
@@ -1056,9 +1096,17 @@ class Vendor extends AppInstance{
 				$msg = $app->tq->dequeue();
 				// varify this is not a dupe trans
 				if (!$this->checkDupeTrans($msg->ISO8583)) {
-					$app->vendorconn->sendData($msg->getTCPMessage());
+					$app->vendorconn->sendData($msg->getTCPMessage(), $cb);
 				}
 			}
+			
+//			// execute our callback (if any)
+//			if (isset($cb) && is_callable($cb)) {
+//				Vendor::logger(Vendor::LOG_LEVEL_DEBUG,' About to call user function at '.__FILE__.':'.__LINE__);
+//				call_user_func($cb);
+//			} else {
+//				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $cb not set or not callable!');
+//			}
 		}
 	}
 	
@@ -1172,7 +1220,7 @@ class Vendor extends AppInstance{
 	 * same query many times. The job name would end up being too long
 	 */
 	public function processDraft(){
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__METHOD__.' called');
+		Vendor::logger(Vendor::LOG_LEVEL_INFO,__METHOD__.' called');
 		$app = $this;
 		if ($app->allow_draft_processing === true) {
 			$today = date('Y-m-d');
@@ -1181,10 +1229,14 @@ class Vendor extends AppInstance{
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Executing the call back for processDraft() job');
 
 				if (count($result) > 0) {
+					while(count($result) > 1) {
+						$trans_row = array_shift($result);
+						$app->createISOandSend($app, null, $trans_row['id'], null, null, false, null);
+					}
 					// send off the first transaction
 					$trans_row = array_shift($result);
 					$app->createISOandSend($app, null, $trans_row['id'], null, null, false, function() use ($app){
-						Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Inside the createISOandSend() CB from processDraft()');
+//						Vendor::logger(Vendor::LOG_LEVEL_DEBUG,'Inside the createISOandSend() CB from processDraft()');
 						$app->processDraft();
 					});
 				} else {
