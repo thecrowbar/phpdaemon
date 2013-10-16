@@ -287,7 +287,8 @@ class RealTimeTransRequest extends HTTPRequest{
 	 * @param ISO8583Trans $iso - the ISO8583 Transaction object to work with
 	 */
 	private function createJSONISO8583Response($iso) {
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating JSON Response from iso:'.get_class($iso));
+		$iso_class_name = (is_object($iso))?get_class($iso):'not an object';
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Creating JSON Response from iso:'.$iso_class_name);
 		//if (is_object($iso) && )
 		$resp = new stdClass();
 		$resp->response_code = 'TR'; // set the default as timeout
