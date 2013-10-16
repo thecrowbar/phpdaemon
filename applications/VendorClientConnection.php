@@ -68,7 +68,7 @@ class VendorClientConnection extends NetworkClientConnection {
 	 * Number of seconds before keep alive timer will fire
 	 * @var Int
 	 */
-	public $keepaliveTimeout = 900;
+	public $keepaliveTimeout = 600;
 	
 	/**
 	 * Log file to record all incoming data to
@@ -294,8 +294,9 @@ class VendorClientConnection extends NetworkClientConnection {
 	/**
 	 * Write data to our connection and fire event
 	 * @param String $data - the binary string of data to send 
+	 * @param Closure $cb - function to execute after data is sent
 	 */
-	public function sendData($data) {		
+	public function sendData($data, $cb = null) {		
 		try{
 			// append our data to any log file
 			if (Vendor::$log_tcp_stream) {
@@ -346,6 +347,14 @@ class VendorClientConnection extends NetworkClientConnection {
 					Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to send data using host '.$this->hostReal.':'.$this->port);
 					$this->connected = false;
 				}
+			}
+			
+			// execute our callback (if any)
+			if (isset($cb) && is_callable($cb)) {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG,' About to call user function at '.__FILE__.':'.__LINE__);
+				call_user_func($cb);
+			} else {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $cb not set or not callable!');
 			}
 				
 		}catch(Exception $ex) {
