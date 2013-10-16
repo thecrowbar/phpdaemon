@@ -1099,13 +1099,69 @@ class ISO8583 {
 				// parse the bits data and convert from BCD, etc to ascii
 				if ($this->DATA_ELEMENT[$bit][0] === 'bcd') {
 					// convert from BCD to decimal and trim to maximum length
+					$data = $this->_data[$bit];
 					$length = $this->DATA_ELEMENT[$bit][1];
-					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trimming data to '.$length.' characters');
-					return substr($this->convertBCDByte2DEC($this->_data[$bit]),0,$length);
+					$var_size = $this->DATA_ELEMENT[$bit][2];
+					$prefix_type = $this->DATA_ELEMENT[$bit][3];
+					$prefix_length = $this->DATA_ELEMENT[$bit][4];
+					if ($var_size == 1) {
+						// get our prefix and chop those characters from front of data
+						$prefix = substr($data, 0, $prefix_length);
+						if ($prefix_type === 'bcd'){
+							$data_length = (int)ltrim(bin2hex($prefix),'0');
+						} else {
+							$data_length = $prefix;
+						}
+						// pull the correct number of bytes from our data
+						// bit 2 pads on the right (after the data), all others 
+						// pad on the left (before the data)
+						if ($bit === 2) {
+							return substr(bin2hex(substr($data,$prefix_length, $length)),0,$data_length);
+						} else {
+							return ltrim(bin2hex(substr($data, $prefix_length, $length)),'0');
+						}
+					} else {
+						// just trim to max length and return
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trimming data to '.$length.' characters');
+						//return substr($this->convertBCDByte2DEC($this->_data[$bit]),0,$length);
+						// if the data size is not divisible by two, then we
+						// drop the leading zero
+						if ($length%2 !== 0) {
+							return substr(bin2hex($data),1,$length);
+						} else {
+							return substr(bin2hex($data),0,$length);
+						}
+					}
+					
 				} else if ($bit == 41 || $bit == 42) {
 					// this bits do not conform to normal ASCII/Numeric. They are zero filled on the left
 					return ltrim($this->_data[$bit], '0');
 					//else if ($this->DATA_ELEMENT[$bit][0] === 'ans') {
+				} else if ($this->DATA_ELEMENT[$bit][0] === 'an' || 
+						$this->DATA_ELEMENT[$bit][0] === 'ans') {
+					// process alpha numeric data
+					$data = $this->_data[$bit];
+					$prefix_type = $this->DATA_ELEMENT[$bit][3];
+					$prefix_length = $this->DATA_ELEMENT[$bit][4];
+					$var_size = $this->DATA_ELEMENT[$bit][2];
+					if ($var_size === 0) {
+						$data_length = $this->DATA_ELEMENT[$bit][1];
+					} else {
+						// find from our size prefix
+						switch($prefix_type){
+							case 'bcd':
+								$data_length = bin2hex(substr($data,0,$prefix_length));
+								break;
+						}
+					}
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$bit: '.$bit.' using $data (HEX):'.bin2hex($data).', $prefix_length (HEX):'.bin2hex($prefix_length).', $data_length(HEX):'.bin2hex($data_length));
+					// bit44 comes through as just the data portion
+					if (strlen($data) < $prefix_length) {
+						// our data is shorter than the prefix, just return our data
+						return $data;
+					} else {
+						return substr($data,$prefix_length,$data_length);
+					}
 				}
 				else {
 					return $this->_data[$bit];
