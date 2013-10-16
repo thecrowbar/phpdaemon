@@ -34,7 +34,7 @@ class ISO8583Trans extends ISO8583{
 	const TERMINAL_TYPE_DIRECT_MARKETING	= 1;
 	
 	// This is used for bit63 table 36
-	const CUST_SVC_PHONE					= '87723550054';
+	const CUST_SVC_PHONE					= '8772350054';
 	
 	/**
 	 * Transaction type. Use the const values form this class
@@ -299,8 +299,11 @@ class ISO8583Trans extends ISO8583{
 			$msg = 'Retail transactions require a know PIN capability';
 			Vendor::logger(Vendor::LOG_LEVEL_ERROR, $msg);
 			throw new Exception($msg);
-		} else if ($this->_trans_type === self::TRANS_TYPE_REFUND &&
-				$this->_trans_row['pos_entry_pin'] !== '011') {
+		} else if (($this->_trans_type === self::TRANS_TYPE_REFUND
+                        || $this->_trans_type === self::TRANS_TYPE_INITIAL_RECURRING
+                        || $this->_trans_type === self::TRANS_TYPE_SUBSEQUENT_RECURRING
+                        || $this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING)
+                        && $this->_trans_row['pos_entry_pin'] !== '011') {
 			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, 'Trans ('.$this->_trans_id.') has wrong POS entry pin ('.$this->_trans_row['pos_entry_pin'].'). Correcting');
 			$this->_trans_row['pos_entry_pin'] = '011';
 		}
@@ -470,8 +473,10 @@ class ISO8583Trans extends ISO8583{
 		$this->addData(42, $this->_trans_row['merchant_id']);
 		
 		//<editor-fold defaultstate="collapsed" desc="Bit44 AVS Response (only for reversals)">
-		// bit 44 is only sent with a refund transaction
-		if($this->_trans_type == self::TRANS_TYPE_REFUND 
+		// bit 44 is only sent with a refund transaction, or with
+                // capture only if we have an AVS response
+		if(($this->_trans_type == self::TRANS_TYPE_REFUND 
+                        || $this->getDataForBit(31) === "\x012")
 				&& array_key_exists('avs_response', $this->_trans_row)
 				&& strlen($this->_trans_row['avs_response']) > 0) {
 			$this->addData(44, $this->_trans_row['avs_response']);
@@ -484,7 +489,8 @@ class ISO8583Trans extends ISO8583{
 		// bit 48 is AVS data
 		if ($this->_trans_type === self::TRANS_TYPE_DIRECT_MARKETING) {
 			$this->avs_required = true;
-		} else if($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING) {
+		} else if($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING
+                        && $this->getDataForBit(31) !== "\x012") {
 			// check if this is the first reecurring billing transaction
 			// or if the last avs_date was >= 12 months ago
 			if ($this->initial_recurring || date('Y-m-d', strtotime('-12 months')) >= $this->last_avs_date) {
@@ -508,8 +514,9 @@ class ISO8583Trans extends ISO8583{
 			//$this->addData(52, "\x00\x00\x00\x00\x00\x00\x00\x00");
 		}else if($this->_trans_type === self::TRANS_TYPE_ZERO_DOLLAR_AVS_CHECK){
 			$this->avs_required = true;
-		} else if($this->_trans_type === self::TRANS_TYPE_SUBSEQUENT_RECURRING
-				|| $this->_trans_type === self::TRANS_TYPE_INITIAL_RECURRING){
+		} else if(($this->_trans_type === self::TRANS_TYPE_SUBSEQUENT_RECURRING
+				|| $this->_trans_type === self::TRANS_TYPE_INITIAL_RECURRING)
+                        && $this->getDataForBit(31) !== "\x012"){
 			// I don;t know if we always need AVS, but if we have the data, we send it
 			$this->avs_required = true;
 		}else {
@@ -711,7 +718,7 @@ class ISO8583Trans extends ISO8583{
 		$tbl14_fields = array(
 			array('aei'						,	1,	'X'),
 			array('issuer_trans_id'			,	15,	' '),
-			array('filler'					,	6,	' '),
+			array('filler'					,	6,	' '), // this is actually the First Auth Amount
 			array('pos_data'				,	12,	' '),
 			array('filler2'					,	12,	' ')
 		);
@@ -730,7 +737,7 @@ class ISO8583Trans extends ISO8583{
 			array('di'						,	1, 'X'),
 			array('issuer_trans_id'			,	15,	' '),
 			array('filler'					,	6,	' '),
-			array('filler2'					,	12,	'0'),
+			array('filler2'					,	12,	'0', STR_PAD_LEFT), // this is actually the First Auth Amount
 			array('total_auth_amount'		,	12,	'0', STR_PAD_LEFT)
 		);
 		
@@ -765,17 +772,17 @@ class ISO8583Trans extends ISO8583{
 					// for the initial message, we just fill the field with the correct value
 					// if bit31 == 2 then this is a capture message
 					$$field[0] = str_pad('',$field[1],$field[2]);
-					Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Trans ('.$trans_id.') with mti:'.$this->getMTI(true).' using default values for bit14');
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$trans_id.') with mti:'.$this->getMTI(true).' using default values for bit14');
 					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Trans ('.$trans_id.') has bit31 data (HEX):'.bin2hex($this->getDataForBit(31)));
 				} else {
 					
 					if (strlen($tbl14_row[$field[0]]) < $field[1]){ //compares length of data from database against the passed in value
 						$str_pad = (array_key_exists(3,$field)) ? $field[3]:STR_PAD_RIGHT;
 						$$field[0] = str_pad($tbl14_row[$field[0]], $field[1], $field[2], $str_pad);
-						Vendor::logger(Vendor::LOG_LEVEL_INFO, '$table14_row['.$field[0].'] is shorted than $field[1]('.$field[1].')');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$table14_row['.$field[0].'] is shorter than $field[1]('.$field[1].')');
 					} else	if (strlen($tbl14_row[$field[0]]) == $field[1]) {
 						$$field[0] = $tbl14_row[$field[0]];
-						Vendor::logger(Vendor::LOG_LEVEL_INFO, '$table14_row['.$field[0].']('.$tbl14_row[$field[0]].') length matches $field[1]('.$field[1].')');
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, '$table14_row['.$field[0].']('.$tbl14_row[$field[0]].') length matches $field[1]('.$field[1].')');
 					} else {
 						throw new Exception("Table 14 {$field[0]} value wrong length! value:{$tbl14_row[$field[0]]}, trans_id:'{$this->_trans_id}");
 					}
@@ -787,7 +794,6 @@ class ISO8583Trans extends ISO8583{
 			// transactions must mirror the original mkt_specific data ind value
 			// space for all others
 			if (($this->_trans_type === self::TRANS_TYPE_RECURRING_BILLING
-					|| $this->_trans_type === self::TRANS_TYPE_INITIAL_RECURRING
 					|| $this->_trans_type === self::TRANS_TYPE_SUBSEQUENT_RECURRING)
 					&& $this->getDataForBit(31) !== "\x012") {
 				if (strtoupper($this->card_type) === 'VISA') {
@@ -877,7 +883,14 @@ class ISO8583Trans extends ISO8583{
 			if (strlen($tbl49)!= 9) {
 				die("Table 49 data is wrong length! \$tbl49:{$tbl49}");
 			}
-		} else {
+		} else if (array_key_exists('table49_response', $this->_trans_row)
+                        && strlen($this->_trans_row['table49_response']) === 1
+                        && $this->getDataForBit(31) === "\x012"){
+                    // capture only transactions that have table49 response need to send it
+                    $tbl49 .= $this->convertDEC2BCD('0003');
+                    $tbl49 .= '49';
+                    $tbl49 .= $this->_trans_row['table49_response'];
+                }else {
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Missing table 49 data or wrong length. Not adding.');
 		}
 		return $tbl49;
