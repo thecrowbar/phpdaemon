@@ -201,6 +201,7 @@ class SQL {
 		// the value should be 009000. The spec lists that as Debit reversal
 		// Credit reversal is listed as 000000
 		// The Receipt Number on a 0400 reversal should match the 0100 message
+		// The bit12 (local time) on a REVERSAL should match the original auth
 		$q = "INSERT INTO {$trans_table} 
 			(trans_type, terminal_id, customer_site_id,
 			user_name, sale_site_id, sx_order_number,
@@ -302,7 +303,7 @@ class SQL {
 				break;
 			case 2:
 				// this is a capture only record
-				$sql_fields = "capture_submit_dt = '{$dt}' ";
+				$sql_fields = "capture_submit_dt = '{$tr['capture_submit_dt']}' ";
 				break;
 		}
 				
@@ -478,6 +479,12 @@ class SQL {
 				case 'Visa' :
 					if ($msg->dataExistsForTable(14)) {
 						$tbl14 = $msg->getParsedBit63Table14();
+						if ($msg->dataExistsForBit(39) && $msg->getDataForBit(39) == '00') {
+							$tbl14['first_auth_amount'] = $msg->original_trans_amount*100;
+							$tbl14['total_auth_amount'] = $msg->original_trans_amount*100;
+						} else {
+							Vendor::logger(Vendor::LOG_LEVEL_INFO, 'Not changing Visa total_authAmount! Bit39:'.bin2hex($msg->getDataForBit(39, true)));
+						}
 						$query = "INSERT INTO table14_visa 
 							(trans_id, aci, issuer_trans_id, 
 							validation_code, mkt_specific_data_ind, rps, 
@@ -492,6 +499,10 @@ class SQL {
 				case 'Master Card':
 					if ($msg->dataExistsForTable(14)) {
 						$tbl14 = $msg->getParsedBit63Table14();
+						if ($msg->dataExistsForBit(39) && $msg->getDataForBit(39) == '00') {
+							//$tbl14['first_auth_amount'] = $msg->getDataForBit(4);
+							$tbl14['total_auth_amount'] = $msg->original_trans_amount*100;
+						}
 						$query = "INSERT INTO table14_mc
 							(trans_id, aci, banknet_date,
 							banknet_reference, filler, cvc_error_code,
@@ -510,6 +521,7 @@ class SQL {
 				case 'American Express':
 					if ($msg->dataExistsForTable(14)) {
 						$tbl14 = $msg->getParsedBit63Table14();
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'AmEx Table14 response saved. Table14:'.print_r($tbl14, true));
 						$query = "INSERT INTO table14_amex
 							(trans_id, aei, issuer_trans_id,
 							filler, pos_data, filler2,
@@ -526,6 +538,13 @@ class SQL {
 				case 'JCB':
 					if ($msg->dataExistsForTable(14)) {
 						$tbl14 = $msg->getParsedBit63Table14();
+						if ($msg->dataExistsForBit(39) && $msg->getDataForBit(39) == '00') {
+							// FIXME Should this field be zero filled 
+							//$tbl14['filler2'] = $msg->original_trans_amount*100;
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Changing tbl14 filler2 value to:'.$tbl14['filler2']);
+							$tbl14['total_auth_amount'] = $msg->original_trans_amount*100;
+							Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Changing tbl14 total_auth_amount value to:'.$tbl14['total_auth_amount']);
+						}
 						$query = "INSERT INTO table14_ds
 							(trans_id, di, issuer_trans_id,
 							filler, filler2, total_auth_amount)
