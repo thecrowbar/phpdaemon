@@ -120,7 +120,10 @@ class VendorRequest extends HTTPRequest{
 					$req->html_file = 'Vendor.display_draft.php';
 				}
 			}
-		} else {
+		} else if(array_key_exists('command', $options) && $options['command'] === 'process_draft'){
+			$this->appInstance->processDraft();
+			return;
+		}else {
 			Vendor::logger(Vendor::LOG_LEVEL_INFO, 'NOT SUBMITTING DRAFT! $options:'.print_r($options, true));
 		}
 		
