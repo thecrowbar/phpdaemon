@@ -70,6 +70,18 @@ class RealTimeTrans extends Vendor{
 	 */
 	public $auto_submit_time = 25;
 	
+	/**
+	 * Debugging flag indicates if HTTP Request Parameters hsould be logged
+	 * @var Bool
+	 */
+	public $log_HTTP_Requests = false;
+	
+	/**
+	 *Filename to save logged requests to
+	 * @var String
+	 */
+	public $log_HTTP_Request_file = '/opt/phpdaemon/log/RealTimeTransRequests.log';
+	
 	
 //	/**
 //	 * First method called when a new object is created.
@@ -234,12 +246,18 @@ class RealTimeTrans extends Vendor{
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, '$req:'.print_r($req, true));
 		//Vendor::log(Vendor::LOG_LEVEL_DEBUG, 'About to attempt parsing of $req->attrs:'.print_r($req->attrs, true));
 		$req_params = RealTimeTransRequest::importRequestValues($req->attrs);
+//		if ($this->log_HTTP_Requests === true) {
+//			$ofile = fopen($this->log_HTTP_Request_file, 'w+');
+//			if ($ofile) {
+//				fwrite($ofile, print_r($req_params, true)."\n\n\n");
+//			}
+//		}
 		Vendor::logger(Vendor::LOG_LEVEL_INFO, '$req_params:'.print_r($req_params, true));
 		if (array_key_exists('transID', $req_params)) {
 			$transID = $req_params['transID'];
 			
 			$this->pending_requests[$transID] = new RealTimeTransRequest($this, $upstream, $req);
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'pending_requests() now contains:'.count($this->pending_requests).' objects');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': pending_requests() now contains:'.count($this->pending_requests).' objects');
 			return $this->pending_requests[$transID];			
 		} else {
 			return new RealTimeTransRequest($this, $upstream, $req);
