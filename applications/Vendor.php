@@ -921,6 +921,8 @@ class Vendor extends AppInstance{
 			$sqlConnResult = $app->sql->getConnection(function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 				if (!$success) {
 					Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'Error getting SQL connection. '.__METHOD__.' error:'.$sql->errmsg);
+				} else {
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Got sql connection. $sql:'.print_r($sql, true));
 				}
 				$sql->query($q, function($sql, $success) use($app, $req, $q, $job, $name, $cb, $wake){
 					// check if we should log all queries
@@ -957,6 +959,8 @@ class Vendor extends AppInstance{
 			}); // end of sql->getConnection callback
 			if($sqlConnResult === false) {
 				Vendor::logger(Vendor::LOG_LEVEL_CRITICAL, 'Failed to get SQL connection! query:'.$q);
+			} else {
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.": \$sql_ConnResult:".print_r($sqlConnResult, true));
 			}
 			
 			
