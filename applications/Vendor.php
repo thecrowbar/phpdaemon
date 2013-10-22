@@ -918,7 +918,8 @@ class Vendor extends AppInstance{
 		// check if our job is already completed. There is no way to restart
 		// a job once the master object has completed.
 		if ($job->hasCompleted()) {
-			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': creating a new ComplexJob. The existing one has completed');
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': creating a new ComplexJob. The existing one has completed and has been saved to object log');
+			Vendor::save_object($job);
 			$app->job = new ComplexJob();
 			$job = $app->job;
 		}
