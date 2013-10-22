@@ -87,6 +87,7 @@ class NetworkClient extends ConnectionPool {
 	 * @return mixed Success|Connection.
 	 */
 	public function getConnection($url = null, $cb = null, $pri = 0) {
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__METHOD__.': called with url:'.$url);
 		if (!is_string($url) && $url !== null && $cb === null) { // if called getConnection(function....)
 			$cb = $url;
 			$url = null; 
@@ -99,6 +100,7 @@ class NetworkClient extends ConnectionPool {
 				$url = array_rand($this->servers);
 			} else {
 				if ($cb) {
+					Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $url is null. Just executing callback');
 					call_user_func($cb, false);
 				}
 				return true;
@@ -119,21 +121,25 @@ class NetworkClient extends ConnectionPool {
 					$this->pending[$url] = new PriorityQueueCallbacks;
 				}
 				$this->pending[$url]->enqueue($cb, $pri);
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': adding the callback to the pending queue');
 				return true;
 			}
 			if ($conn) {
 				if ($cb !== null) {
 					$conn->onConnected($cb);
 				}
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $conn exists. Returning $conn');
 				return true;
 			}
 		} else {
 			$this->servConn[$url] = new ObjectStorage;
 			$this->servConnFree[$url] = new ObjectStorage;
 		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': no connection. Atempting to connect to url:'.$url);
 		$conn = $this->connect($url, $cb);
 
 		if (!$conn || $conn->isFinished()) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': no connection, or conn finished.');
 			return false;
 		}
 		$this->servConn[$url]->attach($conn);
