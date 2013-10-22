@@ -174,7 +174,7 @@ class RealTimeTransRequest extends HTTPRequest{
 		}
 		
 		// create our job object to save query results
-		$job = $this->job = new ComplexJob();
+		//$job = $this->job = new ComplexJob();
 		
 		switch($this->cmd) {
 			case 'view_all_trans':

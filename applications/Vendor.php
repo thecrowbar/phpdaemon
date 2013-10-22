@@ -918,7 +918,8 @@ class Vendor extends AppInstance{
 		// a job once the master object has completed.
 		if ($job->hasCompleted()) {
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': creating a new ComplexJob. The existing one has completed');
-			$job = new ComplexJob();
+			$app->job = new ComplexJob();
+			$job = $app->job;
 		}
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name.' to $job object of type:'.get_class($job));
 		$job_result = $app->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
