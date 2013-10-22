@@ -51,7 +51,7 @@ class ComplexJob {
 	 * @return object
 	 */	
 	public function __construct($cb = null) {
-		Vendor::logger(Vendor::LOB_LEVEL_DEBUG, __METHOD__.': creating new ComplexJob');
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': creating new ComplexJob');
 		$this->state = self::STATE_WAITING;
 		if($cb !== null) {
 			$this->addListener($cb);
