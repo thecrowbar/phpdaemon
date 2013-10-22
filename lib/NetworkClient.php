@@ -129,7 +129,7 @@ class NetworkClient extends ConnectionPool {
 					$conn->onConnected($cb);
 				}
 				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $conn exists. Returning $conn');
-				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $conn:'.print_r($conn));
+				Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $conn:'.print_r($conn, true));
 				return true;
 			}
 		} else {
