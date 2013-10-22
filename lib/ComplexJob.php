@@ -51,6 +51,7 @@ class ComplexJob {
 	 * @return object
 	 */	
 	public function __construct($cb = null) {
+		Vendor::logger(Vendor::LOB_LEVEL_DEBUG, __METHOD__.': creating new ComplexJob');
 		$this->state = self::STATE_WAITING;
 		if($cb !== null) {
 			$this->addListener($cb);
@@ -122,10 +123,12 @@ class ComplexJob {
 	public function addJob($name, $cb) {
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': adding job with name:'.$name);
 		if (isset($this->jobs[$name])) {
+			Vendor::logger(Vendor::LOG_LEVEL_NOTICE, __METHOD__.': job name:'.$name.' already exists!');
 			return false;
 		}
 		$this->jobs[$name] = CallbackWrapper::wrap($cb);
 		++$this->jobsNum;
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': job count:'+$this->jobsNum.', state:'.$this->state);
 		if (($this->state === self::STATE_RUNNING) || ($this->state === self::STATE_DONE)) {
 			call_user_func($cb, $name, $this);
 		}
