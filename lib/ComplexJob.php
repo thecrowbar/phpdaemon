@@ -181,6 +181,7 @@ class ComplexJob {
 	 */	
 	public function __invoke($name = null, $cb = null) {
 		if (func_num_args() === 0) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': called as a function with no arguments. Execute this job.');
 			$this->execute();
 			return;
 		}
