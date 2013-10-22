@@ -914,6 +914,12 @@ class Vendor extends AppInstance{
 			//return;
 		}
 		$job = $app->job;
+		// check if our job is already completed. There is no way to restart
+		// a job once the master object has completed.
+		if ($job->hasCompleted()) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': creating a new ComplexJob. The existing one has completed');
+			$job = new ComplexJob();
+		}
 		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Adding job:'.$job_name.' to $job object of type:'.get_class($job));
 		$job_result = $app->job->addJob($job_name, function($name, $job) use ($app, $req, $q, $wake, $cb){
 			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, 'Inside the createJobFromQuery()->addJob('.$name.') callback!');
