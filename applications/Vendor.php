@@ -977,6 +977,7 @@ class Vendor extends AppInstance{
 			}
 			// 2013-04-19 The jobs are now added to the app instead of the request.
 			// we always execute our job immediately
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': about to execute our job');
 			$job();
 			
 		}
