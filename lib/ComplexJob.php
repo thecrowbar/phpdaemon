@@ -120,6 +120,7 @@ class ComplexJob {
 	 * @return boolean Success
 	 */
 	public function addJob($name, $cb) {
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': adding job with name:'.$name);
 		if (isset($this->jobs[$name])) {
 			return false;
 		}
@@ -166,6 +167,8 @@ class ComplexJob {
 				$this->jobs[$name] = null;
 			}
 			$this->checkIfAllReady();
+		} else {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': job was called, but not able to execute! job state:'.$this->state);
 		}
 	}
 
