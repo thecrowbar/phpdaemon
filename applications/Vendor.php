@@ -10,7 +10,6 @@ class Vendor extends AppInstance{
 	 * WARNING WARNING WARNING - You must create your own key pair! Do not use this one!
 	 */
 	const PRIVATE_KEY = 'file:///opt/phpdaemon/test-rsa-2048-privkey.pem';
-	//const PRIVATE_KEY = 'file:///opt/phpdaemon/rsa-1024-priv.key';
 	
 	/**
 	 * Messages usefule for debugging
@@ -52,6 +51,8 @@ class Vendor extends AppInstance{
 	public static $log_level = self::LOG_LEVEL_DEBUG;
 	
 	public static $log_tcp_stream = true;
+	
+	public static $object_save_filename = 'saved_objects.log';
 	
 	//<editor-fold defaultstate="collapsed" desc="Class properties to hold config settings">
 	/**
@@ -1534,6 +1535,19 @@ class Vendor extends AppInstance{
 		// otherwise we discard
 		if ($level <= self::$log_level) {
 			Daemon::log(self::logLevelName($level).$msg);
+		}
+	}
+	
+	/**
+	 * Save the plain text representation of the object to a log file
+	 * @param Object $obj - the object to save
+	 */
+	public static function save_object($obj) {
+		$file = fopen(slef::$object_save_filename, 'a');
+		if ($file !== false) {
+			fwrite($file, date(ISO8601)." >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
+			fwrite($file, print_r($obj, true));
+			fclose($file);
 		}
 	}
 	
