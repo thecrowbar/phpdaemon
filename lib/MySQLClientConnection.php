@@ -317,10 +317,12 @@ class MySQLClientConnection extends NetworkClientConnection {
 	 */
 	public function command($cmd, $q = '', $callback = NULL) {
 		if ($this->finished) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.' connection finished');
 			throw new MySQLClientConnectionFinished;
 		}
 		
 		if ($this->phase !== self::PHASE_HANDSHAKED) {
+			Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': (not PHASE_HANDSHAKED) $this->phase:'.$this->phase);
 			return false;
 		}
 		
