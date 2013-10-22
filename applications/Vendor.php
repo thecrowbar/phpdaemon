@@ -940,6 +940,8 @@ class Vendor extends AppInstance{
 					if (!$success) {
 						Vendor::logger(Vendor::LOG_LEVEL_ERROR, 'executing query:'.$q.', error:'.$sql->errmsg);
 						return $job->setResult($name, 'ERROR with Query! Query:'.$q.', error:'.$sql->errmsg);
+					}else {
+						Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': $sql->query cb reports success!');
 					} 
 					
 					// create a $result variable. We set it to real values if our query succeeds
@@ -1543,9 +1545,9 @@ class Vendor extends AppInstance{
 	 * @param Object $obj - the object to save
 	 */
 	public static function save_object($obj) {
-		$file = fopen(slef::$object_save_filename, 'a');
+		$file = fopen(self::$object_save_filename, 'a');
 		if ($file !== false) {
-			fwrite($file, date(ISO8601)." >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
+			fwrite($file, date(DATE_ISO8601)." >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>\n");
 			fwrite($file, print_r($obj, true));
 			fclose($file);
 		}

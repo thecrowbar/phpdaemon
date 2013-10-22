@@ -294,6 +294,7 @@ class MySQLClientConnection extends NetworkClientConnection {
 	 * @return boolean Success
 	 */
 	public function query($q, $callback = NULL) {
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG, __METHOD__.': attempting to execute query:'.substr($q, 20));
 		return $this->command(MySQLClient::COM_QUERY, $q, $callback);
 	}
 
