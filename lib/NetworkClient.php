@@ -87,11 +87,11 @@ class NetworkClient extends ConnectionPool {
 	 * @return mixed Success|Connection.
 	 */
 	public function getConnection($url = null, $cb = null, $pri = 0) {
-		Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__METHOD__.': called with url:'.$url);
 		if (!is_string($url) && $url !== null && $cb === null) { // if called getConnection(function....)
 			$cb = $url;
 			$url = null; 
 		}
+		Vendor::logger(Vendor::LOG_LEVEL_DEBUG,__METHOD__.': called with url:'.$url);
 		if ($url === null) {
 
 			if (isset($this->config->server->value)) {
